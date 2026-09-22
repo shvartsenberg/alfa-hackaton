@@ -1,0 +1,21 @@
+enabled: true
+
+detection:
+  enabled_types:
+    - EMAIL
+    - PHONE
+    - PERSON_NAME
+    - PASSPORT_NUMBER
+    - BANK_CARD
+
+masking:
+  EMAIL: FULL_MASK
+  PHONE: PARTIAL_MASK
+  PERSON_NAME: FULL_MASK
+  PASSPORT_NUMBER: PARTIAL_MASK
+  BANK_CARD: PARTIAL_MASK
+
+demasking:
+  enabled: true
+
+context_rules: []

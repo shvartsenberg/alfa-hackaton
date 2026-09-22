@@ -1,0 +1,1 @@
+"""Regex detector package."""

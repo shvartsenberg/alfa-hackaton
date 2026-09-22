@@ -1,0 +1,26 @@
+enabled: true
+
+detection:
+  enabled_types:
+    - EMAIL
+    - PHONE
+    - INN
+    - BANK_CARD
+    - CVV
+    - PIN
+
+masking:
+  EMAIL: PARTIAL_MASK
+  PHONE: FULL_MASK
+  INN: PARTIAL_MASK
+  BANK_CARD: PARTIAL_MASK
+  CVV: FULL_MASK
+  PIN: FULL_MASK
+
+demasking:
+  enabled: true
+
+context_rules:
+  - name: pin_requires_card
+    description: Mask PIN only when a BANK_CARD is present in the same context
+    enabled: false

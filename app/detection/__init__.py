@@ -1,0 +1,1 @@
+"""Detection package: candidate detection and context resolution."""
