@@ -42,6 +42,20 @@ def test_health(client: TestClient) -> None:
 # --- 2. Successful mask -> demask -------------------------------------------
 
 
+def test_readiness(client: TestClient) -> None:
+    resp = client.get("/health/ready")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ready"}
+
+
+def test_response_has_request_id_header(client: TestClient) -> None:
+    resp = client.post(
+        "/process", json={"payload": ORIGINAL, "payload_id": "reqid-1"}
+    )
+    assert resp.status_code == 200
+    assert "X-Request-ID" in resp.headers
+
+
 def test_mask_then_demask_roundtrip(client: TestClient, unique_payload_id: str) -> None:
     masked = _mask(client, unique_payload_id, ORIGINAL)
     assert masked != ORIGINAL

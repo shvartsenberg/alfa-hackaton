@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
 from app.core.enums import RestorationStateStatus
@@ -21,6 +22,7 @@ class RestorationState:
     original_text: str
     masked_text: str
     mappings: dict[str, str] = field(default_factory=dict)
+    entity_count: int = 0
     state: RestorationStateStatus = RestorationStateStatus.MASKED
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     expires_at: datetime | None = None
@@ -30,3 +32,22 @@ class RestorationState:
         if self.expires_at is None:
             return False
         return datetime.now(UTC) >= self.expires_at
+
+    def to_json(self) -> str:
+        """Serialize to JSON for storage backends."""
+        data = asdict(self)
+        data["state"] = self.state.value
+        data["created_at"] = self.created_at.isoformat()
+        data["expires_at"] = self.expires_at.isoformat() if self.expires_at else None
+        return json.dumps(data)
+
+    @classmethod
+    def from_json(cls, payload_id: str, raw: str) -> RestorationState:
+        """Deserialize from JSON produced by :meth:`to_json`."""
+        data = json.loads(raw)
+        data["state"] = RestorationStateStatus(data["state"])
+        data["created_at"] = datetime.fromisoformat(data["created_at"])
+        if data.get("expires_at"):
+            data["expires_at"] = datetime.fromisoformat(data["expires_at"])
+        data["payload_id"] = payload_id
+        return cls(**data)

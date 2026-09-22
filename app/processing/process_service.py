@@ -123,6 +123,7 @@ class ProcessService:
             original_text=payload,
             masked_text=masking.masked_text,
             mappings=masking.mappings,
+            entity_count=len(entities),
             state=RestorationStateStatus.MASKED,
         )
         self._restoration_store.save(payload_id, state)
@@ -151,7 +152,7 @@ class ProcessService:
         return ProcessOutcome(
             result=result,
             operation=operation,
-            entity_count=len(state.mappings),
+            entity_count=state.entity_count,
             detected_types=detected_types or [],
             duration_ms=0.0,
         )

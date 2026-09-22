@@ -69,12 +69,15 @@ metrics:
 
 - `RestorationStore` abstraction allows swapping the in-memory store for a
   Redis-backed store with optional encryption at rest.
+- `RedisRestorationStore` is implemented and selected via
+  `RESTORATION_STORE_BACKEND=redis`, enabling multiple workers to share state.
 
 ### Implemented today
 
 - `InMemoryRestorationStore` (single process, not horizontally scalable).
 - A full store preserves live mappings and rejects new state with HTTP 429;
   it never evicts a reversible mapping before its TTL expires.
+- `RedisRestorationStore` (shared across workers, uses Redis TTL).
 - No encryption at rest.
 
 ## Threat model (initial implementation)

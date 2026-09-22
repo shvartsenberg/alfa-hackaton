@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     restoration_ttl_seconds: int = 3600
     restoration_max_entries: int = 100_000
 
+    restoration_store_backend: str = "memory"  # "memory" | "redis"
+    redis_url: str = "redis://localhost:6379/0"
+
     consumers_dir: Path = PROJECT_ROOT / "configs" / "consumers"
     default_consumer_id: str = "default"
 
@@ -34,6 +37,8 @@ class Settings(BaseSettings):
     detection_llm_enabled: bool = False
     llm_api_key: str = ""
     llm_base_url: str = ""
+    rate_limit_max_requests: int = 1000
+    rate_limit_window_seconds: float = 1.0
 
 
 def get_settings() -> Settings:

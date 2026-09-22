@@ -21,9 +21,10 @@ def hash_identifier(value: str, *, length: int = 12) -> str:
 
 
 def hash_payload(value: str) -> str:
-    """Return a full SHA-256 hex digest of a payload.
+    """Return a fast digest of a payload.
 
     Used to detect whether a retry carries the same payload without storing
-    or logging the payload itself.
+    or logging the payload itself. ``blake2b`` is faster than SHA-256 and
+    collision-resistant enough for equality detection on the hot path.
     """
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return hashlib.blake2b(value.encode("utf-8"), digest_size=16).hexdigest()
