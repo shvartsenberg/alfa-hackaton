@@ -185,3 +185,21 @@ def test_context_rule_unknown_type_is_skipped() -> None:
     rules = [{"type": "NOT_A_TYPE", "requires": ["BANK_CARD"], "enabled": True}]
     # Unknown rule type is skipped; no rules remain -> default applies.
     assert _mask_with_rules(text, entities, rules) == "Пин-код 1234"
+
+
+def test_mask_large_text_is_fast() -> None:
+    import time
+
+    fragment = "Клиент Иванов Иван Иванович, карта 4567 8901 2345 6756. "
+    repeats = 10_000
+    text = fragment * repeats
+    entities: list[PIIEntity] = []
+    for i in range(repeats):
+        base = i * len(fragment)
+        entities.append(_entity(PIIType.PERSON_NAME, "Иванов Иван Иванович", start=base + 7))
+        entities.append(_entity(PIIType.BANK_CARD, "4567 8901 2345 6756", start=base + 35))
+    assert len(text) > 400_000
+    start = time.perf_counter()
+    _mask(text, entities)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0

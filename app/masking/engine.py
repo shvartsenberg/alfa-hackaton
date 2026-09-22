@@ -75,20 +75,24 @@ class MaskingEngine:
         valid = self._select_spans(text, entities)
         rules = self._resolve_context_rules(context_rules)
         present_types = {e.type for e in valid}
-        ordered = sorted(valid, key=lambda e: e.start, reverse=True)
-        masked = text
+        ordered = sorted(valid, key=lambda e: e.start)
+        pieces: list[str] = []
         mappings: dict[str, str] = {}
+        cursor = 0
         for entity in ordered:
             if not self._context_allows(entity.type, present_types, rules):
                 continue
             strategy_enum = strategy_by_type.get(entity.type, MaskingStrategyEnum.PARTIAL_MASK)
             strategy = self._strategy_factory.get_strategy(strategy_enum)
             replacement = strategy.mask(entity)
-            masked = masked[: entity.start] + replacement + masked[entity.end :]
+            pieces.append(text[cursor : entity.start])
+            pieces.append(replacement)
             mappings[replacement] = entity.value
+            cursor = entity.end
+        pieces.append(text[cursor:])
         elapsed = time.perf_counter() - started
         return MaskingResult(
-            masked_text=masked,
+            masked_text="".join(pieces),
             entities=valid,
             mappings=mappings,
             processing_time=elapsed,
