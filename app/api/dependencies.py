@@ -8,10 +8,14 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+import httpx
+
 from app.config.settings import get_settings
 from app.core.ratelimit import SlidingWindowRateLimiter
+from app.detection.base import PIIDetector
 from app.detection.context.resolver import ContextResolver
 from app.detection.engine import DetectionEngine
+from app.detection.llm_detector import LLMClient, LLMDetector
 from app.detection.regex.detector import RegexDetector
 from app.masking.engine import DefaultMaskingStrategyFactory, MaskingEngine
 from app.observability.metrics import Metrics, MetricsRecorder
@@ -21,6 +25,31 @@ from app.processing.process_service import ProcessService
 from app.restoration.base import RestorationStore
 from app.restoration.memory import InMemoryRestorationStore
 from app.restoration.redis_store import RedisRestorationStore
+
+
+class _OpenAICompatClient:
+    """Minimal OpenAI-compatible chat completions client."""
+
+    def __init__(self, base_url: str, api_key: str) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+
+    def complete(self, system: str, messages: list[dict[str, str]]) -> str:
+        payload = {
+            "model": "gpt-4o-mini",
+            "temperature": 0,
+            "messages": [{"role": "system", "content": system}, *messages],
+        }
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        response = httpx.post(
+            f"{self._base_url}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=2.0,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        return str(content)
 
 
 @lru_cache
@@ -58,8 +87,16 @@ def get_policy_provider() -> PolicyProvider:
 
 @lru_cache
 def get_detection_engine() -> DetectionEngine:
+    settings = get_settings()
+    detectors: list[PIIDetector] = [RegexDetector()]
+    if settings.detection_llm_enabled:
+        client: LLMClient = _OpenAICompatClient(
+            settings.llm_base_url,
+            settings.llm_api_key,
+        )
+        detectors.append(LLMDetector(client))
     return DetectionEngine(
-        detectors=[RegexDetector()],
+        detectors=detectors,
         context_resolver=ContextResolver(),
     )
 
