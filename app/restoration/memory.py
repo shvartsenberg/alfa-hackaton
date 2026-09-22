@@ -22,7 +22,7 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from cryptography.fernet import Fernet

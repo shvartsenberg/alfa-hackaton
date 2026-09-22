@@ -15,12 +15,17 @@ result matches the reference format from the task spec:
 from __future__ import annotations
 
 import re
+import secrets
 
 from app.core.enums import PIIType
 from app.core.models import PIIEntity
 from app.masking.base import MaskingStrategy
 
 _FULL_MASK_CHAR = "*"
+# Number of leading/trailing digits kept visible in numeric edge masking.
+_NUMERIC_VISIBLE_EDGE = 2
+# If a value has no more than this many digits, mask all of them.
+_NUMERIC_MIN_DIGITS = 4
 # Types whose PARTIAL_MASK format is "initials": first letter of each word + dot.
 _INITIALS_TYPES = frozenset({PIIType.PERSON_NAME, PIIType.CARDHOLDER_NAME})
 # Types whose PARTIAL_MASK format keeps first 2 and last 2 digits.
@@ -58,16 +63,14 @@ def _mask_numeric_edges(value: str) -> str:
     Example: "4509 123456" -> "45** ****56", "4567 8901 2345 6756" -> "45** **** **** **56".
     """
     digits = _DIGIT_RE.findall(value)
-    if len(digits) <= 4:
+    if len(digits) <= _NUMERIC_MIN_DIGITS:
         return _mask_digits(value)
-    first_two = "".join(digits[:2])
-    last_two = "".join(digits[-2:])
     result: list[str] = []
     digit_index = 0
     total = len(digits)
     for ch in value:
         if ch.isdigit():
-            if digit_index < 2 or digit_index >= total - 2:
+            if digit_index < _NUMERIC_VISIBLE_EDGE or digit_index >= total - _NUMERIC_VISIBLE_EDGE:
                 result.append(digits[digit_index])
             else:
                 result.append(_FULL_MASK_CHAR)
@@ -125,13 +128,13 @@ class PartialMaskStrategy(MaskingStrategy):
 
 
 class TokenizeStrategy(MaskingStrategy):
-    """Replaces the span with a stable token placeholder.
+    """Replaces the span with a unique token placeholder.
 
     Extension point: a real implementation would map to a tokenization store.
     """
 
     def mask(self, entity: PIIEntity) -> str:
-        return f"<TOKEN:{entity.type.value}>"
+        return f"<TOKEN:{entity.type.value}:{secrets.token_hex(8)}>"
 
 
 class SyntheticStrategy(MaskingStrategy):
@@ -141,4 +144,4 @@ class SyntheticStrategy(MaskingStrategy):
     """
 
     def mask(self, entity: PIIEntity) -> str:
-        return f"<SYNTHETIC:{entity.type.value}>"
+        return f"<SYNTHETIC:{entity.type.value}:{secrets.token_hex(8)}>"
