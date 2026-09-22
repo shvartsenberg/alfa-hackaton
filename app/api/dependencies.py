@@ -11,8 +11,8 @@ from functools import lru_cache
 import httpx
 
 from app.config.settings import get_settings
-from app.detection.base import PIIDetector
 from app.core.ratelimit import SlidingWindowRateLimiter
+from app.detection.base import PIIDetector
 from app.detection.context.resolver import ContextResolver
 from app.detection.engine import DetectionEngine
 from app.detection.llm_detector import LLMClient, LLMDetector
