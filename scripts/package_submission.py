@@ -1,26 +1,19 @@
-"""Create a clean submission ZIP for the hackathon.
-
-Usage:
-    python scripts/package_submission.py [output_path]
-
-Excludes VCS dirs, virtualenvs, caches, build artifacts, logs, and other
-generated files. Does not include large datasets.
-"""
+"""Build or validate a deterministic, secret-free submission ZIP."""
 
 from __future__ import annotations
 
+import argparse
 import os
-import sys
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
 EXCLUDED_DIRS = {
     ".git",
     ".idea",
     ".vscode",
     ".venv",
+    ".deps",
     "venv",
     "env",
     "__pycache__",
@@ -36,41 +29,127 @@ EXCLUDED_DIRS = {
     "out",
     "bin",
     "obj",
+    "artifacts",
     ".egg-info",
 }
+EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".log", ".zip"}
+REQUIRED_FILES = {
+    "README.md",
+    "pyproject.toml",
+    "app/main.py",
+    "configs/consumers/default.yaml",
+}
+NORMALIZED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 
-EXCLUDED_SUFFIXES = {".pyc", ".log", ".zip"}
+
+def is_secret_environment_file(name: str) -> bool:
+    """Exclude every .env variant except the documented example file."""
+    return name.startswith(".env") and name != ".env.example"
 
 
-def collect_files(root: Path) -> list[Path]:
+def is_excluded_relative(path: Path) -> bool:
+    return (
+        is_secret_environment_file(path.name)
+        or path.suffix.lower() in EXCLUDED_SUFFIXES
+        or any(part in EXCLUDED_DIRS or part.endswith(".egg-info") for part in path.parts)
+    )
+
+
+def collect_files(root: Path, excluded_paths: set[Path] | None = None) -> list[Path]:
+    root = root.resolve()
+    excluded = {path.resolve() for path in (excluded_paths or set())}
     files: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [
-            d
-            for d in dirnames
-            if d not in EXCLUDED_DIRS and not d.endswith(".egg-info")
-        ]
-        for filename in filenames:
-            path = Path(dirpath) / filename
-            if path.suffix in EXCLUDED_SUFFIXES:
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(
+            directory
+            for directory in dirnames
+            if directory not in EXCLUDED_DIRS and not directory.endswith(".egg-info")
+        )
+        for filename in sorted(filenames):
+            raw_path = Path(dirpath) / filename
+            if raw_path.is_symlink():
+                continue
+            path = raw_path.resolve()
+            if path in excluded:
+                continue
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                continue
+            if is_excluded_relative(relative):
                 continue
             files.append(path)
-    return files
+    return sorted(files, key=lambda path: path.relative_to(root).as_posix())
 
 
-def build_zip(output_path: Path) -> None:
-    files = collect_files(PROJECT_ROOT)
-    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
+def _unsafe_archive_name(name: str) -> bool:
+    normalized = PurePosixPath(name.replace("\\", "/"))
+    has_drive = bool(normalized.parts and normalized.parts[0].endswith(":"))
+    return (
+        normalized.is_absolute()
+        or has_drive
+        or ".." in normalized.parts
+        or not normalized.parts
+    )
+
+
+def validate_zip(output_path: Path) -> None:
+    """Reject corrupt, unsafe, secret-bearing, or incomplete archives."""
+    with zipfile.ZipFile(output_path, "r") as archive:
+        bad = archive.testzip()
+        if bad is not None:
+            raise RuntimeError(f"corrupt entry in archive: {bad}")
+        names = archive.namelist()
+
+    forbidden = []
+    for name in names:
+        relative = Path(*PurePosixPath(name.replace("\\", "/")).parts)
+        if _unsafe_archive_name(name) or is_excluded_relative(relative):
+            forbidden.append(name)
+    if forbidden:
+        raise RuntimeError(f"forbidden files in archive: {sorted(forbidden)}")
+
+    missing = sorted(REQUIRED_FILES.difference(names))
+    if missing:
+        raise RuntimeError(f"required files missing from archive: {missing}")
+
+
+def build_zip(output_path: Path, root: Path = PROJECT_ROOT) -> None:
+    root = root.resolve()
+    output_path = output_path.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    files = collect_files(root, excluded_paths={output_path})
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for file in files:
-            arcname = file.relative_to(PROJECT_ROOT)
-            zf.write(file, arcname)
-    print(f"Created {output_path} with {len(files)} files")
+            archive_name = file.relative_to(root).as_posix()
+            info = zipfile.ZipInfo(archive_name, date_time=NORMALIZED_ZIP_TIME)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, file.read_bytes())
+    validate_zip(output_path)
+    print(
+        f"Created {output_path} with {len(files)} files "
+        f"({output_path.stat().st_size} bytes, validated)"
+    )
 
 
-def main() -> None:
-    output = Path(sys.argv[1]) if len(sys.argv) > 1 else PROJECT_ROOT / "submission.zip"
-    build_zip(output)
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("output", type=Path, nargs="?", default=PROJECT_ROOT / "submission.zip")
+    parser.add_argument(
+        "--validate",
+        dest="validate_only",
+        type=Path,
+        help="validate an existing ZIP without rebuilding it",
+    )
+    args = parser.parse_args()
+    if args.validate_only is not None:
+        validate_zip(args.validate_only)
+        print(f"Validated {args.validate_only.resolve()}")
+        return 0
+    build_zip(args.output)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

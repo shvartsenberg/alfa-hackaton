@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from app.core.enums import RestorationStateStatus
+from app.core.exceptions import ServiceOverloadedError
 from app.restoration.memory import InMemoryRestorationStore
 from app.restoration.models import RestorationState
 
@@ -45,3 +48,18 @@ def test_ttl_expiry() -> None:
     assert store.get("abc") is not None
     time.sleep(1.1)
     assert store.get("abc") is None
+
+
+def test_full_store_rejects_new_state_without_losing_live_mapping() -> None:
+    """A full store must preserve every live reversible mapping."""
+    store = InMemoryRestorationStore(ttl_seconds=3600, max_entries=3)
+    for i in range(3):
+        store.save(f"k{i}", _state(f"k{i}"))
+    assert len(store._data) == 3
+
+    with pytest.raises(ServiceOverloadedError):
+        store.save("k3", _state("k3"))
+
+    assert len(store._data) == 3
+    assert store.get("k0") is not None
+    assert store.get("k3") is None
