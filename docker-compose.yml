@@ -6,6 +6,16 @@ services:
     environment:
       - APP_ENV=development
       - RESTORATION_TTL_SECONDS=3600
+      - RESTORATION_STORE_BACKEND=redis
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
     volumes:
       - ./configs:/app/configs
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
     restart: unless-stopped

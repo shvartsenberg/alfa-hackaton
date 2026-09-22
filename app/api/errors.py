@@ -11,12 +11,14 @@ from fastapi.responses import JSONResponse
 
 from app.api.dependencies import get_metrics_recorder
 from app.core.exceptions import (
+    BadRequestError,
     ConsumerNotAllowedError,
     InvalidPayloadError,
     PIIProxyError,
     ProcessingError,
     RestorationStateNotFoundError,
     ServiceOverloadedError,
+    ServiceUnavailableError,
 )
 from app.observability.logging import get_logger
 
@@ -94,10 +96,12 @@ def register_error_handlers(app: FastAPI) -> None:
 
 
 __all__ = [
+    "BadRequestError",
     "ConsumerNotAllowedError",
     "InvalidPayloadError",
     "RestorationStateNotFoundError",
     "ProcessingError",
     "ServiceOverloadedError",
+    "ServiceUnavailableError",
     "register_error_handlers",
 ]

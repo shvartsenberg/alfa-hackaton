@@ -7,8 +7,9 @@ from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Request, Response
 
-from app.api.dependencies import get_metrics
+from app.api.dependencies import get_metrics, get_rate_limiter
 from app.api.errors import register_error_handlers
+from app.api.middleware import RateLimitMiddleware
 from app.api.routes.health import router as health_router
 from app.api.routes.metrics import router as metrics_router
 from app.api.routes.process import router as process_router
@@ -73,6 +74,9 @@ async def observe_http_request(
             },
         )
         reset_request_id(token)
+
+
+app.add_middleware(RateLimitMiddleware, limiter=get_rate_limiter())
 
 register_error_handlers(app)
 app.include_router(health_router)

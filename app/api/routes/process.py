@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from app.api.dependencies import (
     get_default_consumer_id,
@@ -21,19 +21,20 @@ logger = get_logger("api.process")
 
 @router.post("/process", response_model=ProcessResponse)
 async def process(
-    request: ProcessRequest,
+    request: Request,
+    body: ProcessRequest,
     process_service: ProcessService = Depends(get_process_service),
     policy_provider: PolicyProvider = Depends(get_policy_provider),
     consumer_id: str = Depends(get_default_consumer_id),
 ) -> ProcessResponse:
     policy = policy_provider.get_policy(consumer_id)
-    outcome = process_service.process(request.payload, request.payload_id, policy)
+    outcome = process_service.process(body.payload, body.payload_id, policy)
     logger.info(
         "process_completed",
         extra={
             "event": "process_completed",
             "operation": outcome.operation.value,
-            "payload_id_hash": hash_identifier(request.payload_id),
+            "payload_id_hash": hash_identifier(body.payload_id),
             "consumer_id": consumer_id,
             "detected_types": outcome.detected_types,
             "entity_count": outcome.entity_count,

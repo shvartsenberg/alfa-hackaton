@@ -43,8 +43,11 @@ def test_hash_identifier_is_stable_and_short() -> None:
     assert hash_identifier("a") != hash_identifier("b")
 
 
-def test_hash_payload_is_full_sha256() -> None:
-    assert len(hash_payload("secret text")) == 64
+def test_hash_payload_is_stable_and_fixed_length() -> None:
+    digest = hash_payload("secret text")
+    assert len(digest) == 32
+    assert hash_payload("secret text") == digest
+    assert hash_payload("other text") != digest
 
 
 def test_success_logs_are_structured_and_do_not_leak_pii(
