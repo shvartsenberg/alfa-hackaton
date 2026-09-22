@@ -20,11 +20,10 @@ from app.masking.strategies.impl import (
 logger = logging.getLogger("pii_security_proxy.masking.engine")
 
 # Default context rules: a PII type is only masked when at least one of the
-# required types is present in the same text. Used when no rules are supplied
-# by the consumer policy (context_rules is None or empty).
-CONTEXT_REQUIRES: dict[PIIType, frozenset[PIIType]] = {
-    PIIType.PIN: frozenset({PIIType.BANK_CARD}),
-}
+# required types is present in the same text. Empty by default so every PII
+# type is masked unconditionally; rules are enabled per consumer via
+# ``context_rules`` in the policy YAML.
+CONTEXT_REQUIRES: dict[PIIType, frozenset[PIIType]] = {}
 
 
 @dataclass(slots=True)
@@ -121,6 +120,40 @@ class MaskingEngine:
         return selected
 
     @staticmethod
+    def _parse_rule_type(rule: dict[str, object]) -> PIIType | None:
+        raw_type = rule.get("type")
+        if not isinstance(raw_type, str):
+            logger.warning("context rule missing 'type'; skipped")
+            return None
+        try:
+            return PIIType(raw_type)
+        except ValueError:
+            logger.warning("context rule has unknown PII type %r; skipped", raw_type)
+            return None
+
+    @staticmethod
+    def _parse_required_types(
+        raw_required: object, raw_type: str
+    ) -> frozenset[PIIType] | None:
+        if not isinstance(raw_required, list) or not raw_required:
+            logger.warning(
+                "context rule for %s has no 'requires' list; skipped", raw_type
+            )
+            return None
+        required: set[PIIType] = set()
+        for raw_req in raw_required:
+            try:
+                required.add(PIIType(raw_req))
+            except ValueError:
+                logger.warning(
+                    "context rule for %s has unknown required type %r; skipped",
+                    raw_type,
+                    raw_req,
+                )
+                return None
+        return frozenset(required)
+
+    @staticmethod
     def _resolve_context_rules(
         context_rules: list[dict[str, object]] | None,
     ) -> dict[PIIType, frozenset[PIIType]]:
@@ -135,39 +168,17 @@ class MaskingEngine:
             return dict(CONTEXT_REQUIRES)
         rules: dict[PIIType, frozenset[PIIType]] = {}
         for rule in context_rules:
-            raw_type = rule.get("type")
-            if not isinstance(raw_type, str):
-                logger.warning("context rule missing 'type'; skipped")
-                continue
-            try:
-                pii_type = PIIType(raw_type)
-            except ValueError:
-                logger.warning("context rule has unknown PII type %r; skipped", raw_type)
+            pii_type = MaskingEngine._parse_rule_type(rule)
+            if pii_type is None:
                 continue
             if rule.get("enabled", True) is False:
                 rules[pii_type] = frozenset()
                 continue
-            raw_required = rule.get("requires")
-            if not isinstance(raw_required, list) or not raw_required:
-                logger.warning(
-                    "context rule for %s has no 'requires' list; skipped", raw_type
-                )
-                continue
-            required: set[PIIType] = set()
-            valid = True
-            for raw_req in raw_required:
-                try:
-                    required.add(PIIType(raw_req))
-                except ValueError:
-                    logger.warning(
-                        "context rule for %s has unknown required type %r; skipped",
-                        raw_type,
-                        raw_req,
-                    )
-                    valid = False
-                    break
-            if valid:
-                rules[pii_type] = frozenset(required)
+            required = MaskingEngine._parse_required_types(
+                rule.get("requires"), pii_type.value
+            )
+            if required is not None:
+                rules[pii_type] = required
         # If every rule was skipped, fall back to the default so a broken
         # config does not silently disable the PIN protection.
         if not rules:

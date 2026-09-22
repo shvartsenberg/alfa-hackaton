@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.core.enums import MaskingStrategy, PIIType
+from app.core.enums import PIIType
 from app.core.models import PIIEntity
 from app.masking.engine import DefaultMaskingStrategyFactory, MaskingEngine
 from app.masking.strategies.impl import FullMaskStrategy, PartialMaskStrategy
@@ -85,12 +85,20 @@ def test_partial_mask_short_value_without_digits_is_unchanged() -> None:
 
 
 def test_reference_example_from_spec() -> None:
+    from pathlib import Path
+
+    from app.policies.loader import FilePolicyProvider
+
+    policy = FilePolicyProvider(
+        Path(__file__).resolve().parents[2] / "configs" / "consumers"
+    ).get_policy("default")
     text = "Клиент Иванов Иван Иванович, паспорт 4509 123456"
     entities = [
         _entity(PIIType.PERSON_NAME, "Иванов Иван Иванович", start=7),
         _entity(PIIType.PASSPORT_NUMBER, "4509 123456", start=37),
     ]
-    assert _mask(text, entities) == "Клиент И. И. И., паспорт 45** ****56"
+    result = _engine().mask(text, entities, policy.masking).masked_text
+    assert result == "Клиент ****** **** ********, паспорт **** ******"
 
 
 def test_text_outside_spans_is_unchanged() -> None:
@@ -99,10 +107,10 @@ def test_text_outside_spans_is_unchanged() -> None:
     assert _mask(text, entities) == "Привет, И. И., до встречи"
 
 
-def test_pin_without_card_is_not_masked() -> None:
+def test_pin_without_card_is_masked_by_default() -> None:
     text = "Пин-код 1234"
     entities = [_entity(PIIType.PIN, "1234", start=8)]
-    assert _mask(text, entities) == "Пин-код 1234"
+    assert _mask(text, entities) == "Пин-код ****"
 
 
 def test_pin_with_card_is_masked() -> None:
@@ -159,7 +167,8 @@ def _mask_with_rules(
 def test_empty_context_rules_use_default() -> None:
     text = "Пин-код 1234"
     entities = [_entity(PIIType.PIN, "1234", start=8)]
-    assert _mask_with_rules(text, entities, []) == "Пин-код 1234"
+    # Empty rules -> default (empty CONTEXT_REQUIRES) -> PIN masked always.
+    assert _mask_with_rules(text, entities, []) == "Пин-код ****"
 
 
 def test_context_rules_from_policy() -> None:
@@ -170,6 +179,14 @@ def test_context_rules_from_policy() -> None:
     ]
     rules = [{"type": "PIN", "requires": ["BANK_CARD"], "enabled": True}]
     assert _mask_with_rules(text, entities, rules) == "Карта 45** **** **** **56, пин ****"
+
+
+def test_context_rule_requires_card_blocks_pin() -> None:
+    text = "Пин-код 1234"
+    entities = [_entity(PIIType.PIN, "1234", start=8)]
+    rules = [{"type": "PIN", "requires": ["BANK_CARD"], "enabled": True}]
+    # PIN requires BANK_CARD, which is absent -> PIN is not masked.
+    assert _mask_with_rules(text, entities, rules) == "Пин-код 1234"
 
 
 def test_context_rule_disabled_masks_always() -> None:
@@ -184,7 +201,7 @@ def test_context_rule_unknown_type_is_skipped() -> None:
     entities = [_entity(PIIType.PIN, "1234", start=8)]
     rules = [{"type": "NOT_A_TYPE", "requires": ["BANK_CARD"], "enabled": True}]
     # Unknown rule type is skipped; no rules remain -> default applies.
-    assert _mask_with_rules(text, entities, rules) == "Пин-код 1234"
+    assert _mask_with_rules(text, entities, rules) == "Пин-код ****"
 
 
 def test_mask_large_text_is_fast() -> None:

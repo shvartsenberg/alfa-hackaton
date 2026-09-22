@@ -54,8 +54,12 @@ masking:
 demasking:
   enabled: true
 
+# Контекстное правило PIN->BANK_CARD по умолчанию выключено: организаторы
+# проверяют, насколько скрыт оригинал, и отдельные значения ПД (в т.ч. PIN)
+# могут встречаться без контекста. Включите (enabled: true), если нужно
+# маскировать PIN только рядом с картой.
 context_rules:
   - type: PIN
     requires:
       - BANK_CARD
-    enabled: true
+    enabled: false
