@@ -68,17 +68,41 @@ metrics:
 ### Provided by architecture
 
 - `RestorationStore` abstraction allows swapping the in-memory store for a
-  Redis-backed store with optional encryption at rest.
+  Redis-backed store.
 - `RedisRestorationStore` is implemented and selected via
   `RESTORATION_STORE_BACKEND=redis`, enabling multiple workers to share state.
+- Both stores encrypt the full restoration state (including `original_text`
+  and mappings) with Fernet before writing it, so PII never appears in
+  plaintext at rest.
+- Redis keys are derived from an HMAC of `payload_id`, so the raw identifier
+  is never used as a key.
+- In Redis mode the `MASKING_KEY` must be set; a missing key fails fast at
+  startup instead of silently generating a random one (which would make state
+  unrecoverable across workers).
 
 ### Implemented today
 
 - `InMemoryRestorationStore` (single process, not horizontally scalable).
 - A full store preserves live mappings and rejects new state with HTTP 429;
   it never evicts a reversible mapping before its TTL expires.
-- `RedisRestorationStore` (shared across workers, uses Redis TTL).
-- No encryption at rest.
+- `RedisRestorationStore` (shared across workers, uses Redis TTL, atomic
+  compare-and-set lifecycle via WATCH/MULTI).
+- Encryption at rest (Fernet) for both stores.
+
+## Redis configuration
+
+- Set `MASKING_KEY` to a Fernet key (identical across all workers). Generate
+  with:
+  ```bash
+  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+  ```
+- Redis auth: use a URL with credentials, e.g.
+  `redis://:password@redis-host:6379/0`, or set `REDIS_PASSWORD` in the
+  compose environment.
+- TLS: terminate TLS at a reverse proxy / load balancer in front of the API,
+  or use a Redis with a signed server certificate. mTLS is not required.
+- The Redis port is not exposed to the host in `docker-compose.yml`; only the
+  `api` service reaches it.
 
 ## Threat model (initial implementation)
 
@@ -86,8 +110,8 @@ metrics:
 | --- | --- |
 | PII leakage via logs | Mitigated: sensitive fields are never logged |
 | PII leakage via metrics | Mitigated: no payload in labels |
-| Retry corrupting state | Mitigated: explicit state machine |
-| Horizontal scaling | Not supported (in-memory store) |
-| Encryption at rest | Not implemented |
+| Retry corrupting state | Mitigated: explicit state machine + atomic CAS |
+| Horizontal scaling | Supported via Redis store |
+| Encryption at rest | Implemented (Fernet) for memory and Redis |
 | Authentication / authorization | Not implemented |
-| Rate limiting | Not implemented (429 handler exists) |
+| Rate limiting | Implemented (global, returns 429 with Retry-After) |

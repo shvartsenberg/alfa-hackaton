@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     restoration_store_backend: str = "memory"  # "memory" | "redis"
     redis_url: str = "redis://localhost:6379/0"
+    masking_key: str = ""
 
     consumers_dir: Path = PROJECT_ROOT / "configs" / "consumers"
     default_consumer_id: str = "default"

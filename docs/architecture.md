@@ -59,6 +59,21 @@ not from a primitive "payload_id exists" check. This makes retries safe:
 - Request with the masked payload -> DEMASK, return original.
 - Retry of the masked payload -> same original result.
 
+The read-modify-write of the lifecycle is atomic through the store's
+`transition` method: in-memory via a lock, Redis via an optimistic
+compare-and-set (WATCH/MULTI). Two different original payloads racing on the
+same new `payload_id` cannot both become owners; the loser receives a 4xx.
+
+## Detection
+
+The detector is a recall-first hybrid for Russian text: regex + validators
+(Luhn, INN checksum, birth-date) + marker-anchored context patterns. It covers
+all 23 required PII types. Unambiguous types (EMAIL, PHONE, BANK_CARD, INN,
+PASSPORT_NUMBER, PASSPORT_DIVISION_CODE, BIRTH_DATE, CVV, PIN) are detected
+directly; context-dependent types (PERSON_NAME, ADDRESS, CITY, STREET, etc.)
+require a marker to avoid obvious false positives. Overlapping spans are
+resolved by type priority and span length.
+
 ## Extension points
 
 - New `PIIType` values in `app/core/enums.py`.

@@ -65,6 +65,15 @@ class ProcessUser(FastHttpUser):
             name=name,
             catch_response=True,
         ) as response:
+            if response.status_code == 429:
+                # 429 is a legitimate overload signal, not a functional error.
+                # It must carry Retry-After. Count it separately.
+                retry_after = response.headers.get("Retry-After")
+                if retry_after is None:
+                    response.failure("429 without Retry-After")
+                else:
+                    response.success()
+                return None
             if response.status_code != 200:
                 retry_after = response.headers.get("Retry-After")
                 suffix = f" retry_after={retry_after}" if retry_after else ""

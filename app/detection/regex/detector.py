@@ -1,8 +1,21 @@
 """Regex-based detector for PII entities.
 
-Each rule pairs a compiled pattern with an optional marker list and an
-optional validator. A marker is a substring that must appear in a window
-around the match; a validator is a boolean function applied to the match.
+A recall-first hybrid detector for Russian text. Each rule pairs a compiled
+pattern with an optional marker list and an optional validator. A marker is a
+substring that must appear in a window around the match; a validator is a
+boolean function applied to the match.
+
+Design notes:
+- Recall-first: when in doubt between over-masking and leaking PII, we mask.
+- Types that are unambiguous (EMAIL, PHONE, BANK_CARD, INN, PASSPORT_NUMBER,
+  PASSPORT_DIVISION_CODE, CVV, PIN) are detected directly.
+- Types that need context (PERSON_NAME, BIRTH_PLACE, CITIZENSHIP, ADDRESS,
+  PASSPORT_ISSUER, PASSPORT_ISSUE_DATE, DRIVER_LICENSE, COUNTRY, POSTAL_CODE,
+  CITY, STREET, HOUSE, APARTMENT, CARDHOLDER_NAME) are matched with
+  marker-anchored patterns so the value is captured right after a known
+  marker, avoiding obvious false positives (e.g. "Александр Сергеевич Пушкин"
+  in a historical context, a bank branch address, a contract date, an order
+  number).
 """
 
 from __future__ import annotations
@@ -29,15 +42,56 @@ _BIRTH_DATE_RE = re.compile(
 _CVV_RE = re.compile(r"(?<!\d)\d{3,4}(?!\d)")
 _PIN_RE = re.compile(r"(?<!\d)\d{4}(?!\d)")
 
-_MARKER_WINDOW = 40
-
-_MARKERS: dict[PIIType, tuple[str, ...]] = {
-    PIIType.PASSPORT_NUMBER: ("паспорт", "серия", "выдан"),
-    PIIType.PASSPORT_DIVISION_CODE: ("код подразделения",),
-    PIIType.BIRTH_DATE: ("г.р.", "дата рожд", "род."),
-    PIIType.CVV: ("cvv", "cvc", "код проверки"),
-    PIIType.PIN: ("pin", "пин"),
-}
+# Marker-anchored patterns: capture the value right after a known marker.
+_PERSON_NAME_RE = re.compile(
+    r"(?i:клиент|гражданин|гражданка|заявитель|пациент|сотрудник|менеджер|"
+    r"директор|держатель|владелец|представитель|покупатель|абонент|"
+    r"пользователь|получатель|отправитель)\s+"
+    r"([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2})"
+)
+_BIRTH_PLACE_RE = re.compile(
+    r"(?i:место рождения|родился в|родилась в|уроженец|уроженка|родом из)\s*:?\s*"
+    r"((?:[а-яё]+\s+)?[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2})"
+)
+_CITIZENSHIP_RE = re.compile(
+    r"(?i:гражданство|гражданин|гражданка)\s*:?\s*([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)"
+)
+_PASSPORT_ISSUER_RE = re.compile(
+    r"(?i:кем выдан|выдан|выдано|орган, выдавший)\s*:?\s*"
+    r"([А-ЯЁ][А-ЯЁа-яё]*(?:\s+[А-ЯЁ][А-ЯЁа-яё]*){0,5}(?:\s+г\.\s*[А-ЯЁ][а-яё]+)?)"
+)
+_PASSPORT_ISSUE_DATE_RE = re.compile(
+    r"(?i:дата выдачи|выдан|выдано)\s+"
+    r"(\d{2}[./]\d{2}[./]\d{4}|\d{4}-\d{2}-\d{2})"
+)
+_DRIVER_LICENSE_RE = re.compile(
+    r"(?i:водительское удостоверение|водительские права|права|в\.у\.|ву)\s+"
+    r"(\d{2}\s?\d{2}\s?\d{6}|\d{10})"
+)
+_ADDRESS_RE = re.compile(
+    r"(?i:адрес|место жительства|место регистрации|проживает|прожива|"
+    r"зарегистрирован|зарегистрирована|прописан|прописана)\s*:?\s*"
+    r"((?:[А-ЯЁа-яё0-9]+\.?\s*[,.]?\s*){2,10})"
+)
+_COUNTRY_RE = re.compile(
+    r"(?i:страна|гражданство)\s*:?\s*([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)"
+)
+_POSTAL_CODE_RE = re.compile(
+    r"(?i:индекс|почтовый индекс)\s*:?\s*(\d{6})"
+)
+_CITY_RE = re.compile(
+    r"(?i:город|г\.)\s*:?\s*([А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?)"
+)
+_STREET_RE = re.compile(
+    r"(?i:улица|ул\.|проспект|пр-т|переулок|пер\.)\s*:?\s*"
+    r"([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)"
+)
+_HOUSE_RE = re.compile(r"(?i:дом|д\.)\s*:?\s*(\d{1,4}(?:[А-ЯЁа-яё])?)")
+_APARTMENT_RE = re.compile(r"(?i:квартира|кв\.)\s*:?\s*(\d{1,4})")
+_CARDHOLDER_NAME_RE = re.compile(
+    r"(?i:держатель карты|cardholder|имя на карте|владелец карты)\s*:?\s*"
+    r"([A-ZА-ЯЁ][A-Za-zА-ЯЁа-яё]+(?:\s+[A-ZА-ЯЁ][A-Za-zА-ЯЁа-яё]+)?)"
+)
 
 _VALIDATORS: dict[PIIType, Callable[[str], bool]] = {
     PIIType.BANK_CARD: luhn,
@@ -45,6 +99,9 @@ _VALIDATORS: dict[PIIType, Callable[[str], bool]] = {
     PIIType.BIRTH_DATE: is_birth_date,
 }
 
+# Rules that capture a group (the actual PII value) vs. the whole match.
+# Marker-anchored patterns use inline (?i:...) so the marker is
+# case-insensitive while the captured value stays case-sensitive.
 _RULES: dict[PIIType, re.Pattern[str]] = {
     PIIType.EMAIL: _EMAIL_RE,
     PIIType.PHONE: _PHONE_RE,
@@ -55,6 +112,58 @@ _RULES: dict[PIIType, re.Pattern[str]] = {
     PIIType.BIRTH_DATE: _BIRTH_DATE_RE,
     PIIType.CVV: _CVV_RE,
     PIIType.PIN: _PIN_RE,
+    PIIType.PERSON_NAME: _PERSON_NAME_RE,
+    PIIType.BIRTH_PLACE: _BIRTH_PLACE_RE,
+    PIIType.CITIZENSHIP: _CITIZENSHIP_RE,
+    PIIType.PASSPORT_ISSUER: _PASSPORT_ISSUER_RE,
+    PIIType.PASSPORT_ISSUE_DATE: _PASSPORT_ISSUE_DATE_RE,
+    PIIType.DRIVER_LICENSE: _DRIVER_LICENSE_RE,
+    PIIType.ADDRESS: _ADDRESS_RE,
+    PIIType.COUNTRY: _COUNTRY_RE,
+    PIIType.POSTAL_CODE: _POSTAL_CODE_RE,
+    PIIType.CITY: _CITY_RE,
+    PIIType.STREET: _STREET_RE,
+    PIIType.HOUSE: _HOUSE_RE,
+    PIIType.APARTMENT: _APARTMENT_RE,
+    PIIType.CARDHOLDER_NAME: _CARDHOLDER_NAME_RE,
+}
+
+# Types whose rule captures the value in group(1) rather than the whole match.
+_GROUPED_TYPES = frozenset(
+    {
+        PIIType.PERSON_NAME,
+        PIIType.BIRTH_PLACE,
+        PIIType.CITIZENSHIP,
+        PIIType.PASSPORT_ISSUER,
+        PIIType.PASSPORT_ISSUE_DATE,
+        PIIType.DRIVER_LICENSE,
+        PIIType.ADDRESS,
+        PIIType.COUNTRY,
+        PIIType.POSTAL_CODE,
+        PIIType.CITY,
+        PIIType.STREET,
+        PIIType.HOUSE,
+        PIIType.APARTMENT,
+        PIIType.CARDHOLDER_NAME,
+    }
+)
+
+# Non-grouped types that still require a marker in a window around the match
+# to avoid matching digits inside other numbers (e.g. CVV/PIN inside a phone)
+# or dates/numbers in non-PII contexts (e.g. a contract date, an org INN).
+_MARKER_WINDOW = 40
+_MARKER_TYPES: dict[PIIType, tuple[str, ...]] = {
+    PIIType.CVV: ("cvv", "cvc", "код проверки"),
+    PIIType.PIN: ("pin", "пин"),
+    PIIType.BIRTH_DATE: (
+        "г.р.",
+        "дата рожд",
+        "дата рождения",
+        "род.",
+        "родился",
+        "родилась",
+    ),
+    PIIType.PASSPORT_NUMBER: ("паспорт", "серия", "выдан"),
 }
 
 
@@ -67,29 +176,41 @@ class RegexDetector(PIIDetector):
         entities: list[PIIEntity] = []
         for pii_type, pattern in _RULES.items():
             for match in pattern.finditer(text):
-                value = match.group(0)
+                if pii_type in _GROUPED_TYPES:
+                    value = match.group(1)
+                    start = match.start(1)
+                    end = match.end(1)
+                    # Strip trailing punctuation so the span covers only the value.
+                    while end > start and value[-1] in ".,;!? ":
+                        end -= 1
+                        value = value[:-1]
+                else:
+                    value = match.group(0)
+                    start = match.start()
+                    end = match.end()
                 validator = _VALIDATORS.get(pii_type)
                 if validator is not None and not validator(value):
                     continue
-                if not self._has_marker(text, match.start(), match.end(), pii_type):
+                markers = _MARKER_TYPES.get(pii_type)
+                if markers is not None and not self._has_marker(
+                    text, start, end, markers
+                ):
                     continue
                 entities.append(
                     PIIEntity(
                         type=pii_type,
                         value=value,
-                        start=match.start(),
-                        end=match.end(),
+                        start=start,
+                        end=end,
                         confidence=1.0,
                         detector=self.name,
                     )
                 )
         return entities
 
+    @staticmethod
     def _has_marker(
-        self, text: str, start: int, end: int, pii_type: PIIType
+        text: str, start: int, end: int, markers: tuple[str, ...]
     ) -> bool:
-        markers = _MARKERS.get(pii_type)
-        if markers is None:
-            return True
         window = text[max(0, start - _MARKER_WINDOW) : end + _MARKER_WINDOW].lower()
         return any(marker in window for marker in markers)

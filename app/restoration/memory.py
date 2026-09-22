@@ -25,7 +25,7 @@ from collections import OrderedDict
 from cryptography.fernet import Fernet
 
 from app.core.exceptions import ServiceOverloadedError
-from app.restoration.base import RestorationStore
+from app.restoration.base import RestorationStore, TransitionFn
 from app.restoration.models import RestorationState
 
 logger = logging.getLogger("pii_security_proxy.restoration.memory")
@@ -90,6 +90,36 @@ class InMemoryRestorationStore(RestorationStore):
     def delete(self, payload_id: str) -> None:
         with self._lock:
             self._data.pop(payload_id, None)
+
+    def transition(
+        self, payload_id: str, fn: TransitionFn
+    ) -> RestorationState | None:
+        with self._lock:
+            self._evict_expired_locked()
+            entry = self._data.get(payload_id)
+            current: RestorationState | None = None
+            if entry is not None:
+                expires_at, encrypted = entry
+                if time.monotonic() < expires_at:
+                    raw = self._fernet.decrypt(encrypted).decode("utf-8")
+                    current = RestorationState.from_json(payload_id, raw)
+                else:
+                    del self._data[payload_id]
+            new_state = fn(current)
+            if new_state is None:
+                self._data.pop(payload_id, None)
+                return None
+            if payload_id not in self._data and len(self._data) >= self._max_entries:
+                raise ServiceOverloadedError(
+                    "restoration store capacity exceeded",
+                    retry_after=1,
+                )
+            if payload_id in self._data:
+                self._data.move_to_end(payload_id)
+            expires_at = time.monotonic() + self._ttl_seconds
+            encrypted = self._fernet.encrypt(new_state.to_json().encode("utf-8"))
+            self._data[payload_id] = (expires_at, encrypted)
+            return new_state
 
     def _evict_expired_locked(self) -> None:
         now = time.monotonic()

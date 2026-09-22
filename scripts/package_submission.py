@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
+import sys
+import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -133,6 +136,46 @@ def build_zip(output_path: Path, root: Path = PROJECT_ROOT) -> None:
     )
 
 
+def smoke_validate_zip(output_path: Path) -> None:
+    """Unpack the archive, install it, and run a minimal smoke test.
+
+    Verifies that a clean checkout from the ZIP installs, imports, and serves
+    the /process contract.
+    """
+    validate_zip(output_path)
+    with tempfile.TemporaryDirectory() as tmp:
+        extract_dir = Path(tmp) / "extract"
+        extract_dir.mkdir()
+        with zipfile.ZipFile(output_path, "r") as archive:
+            archive.extractall(extract_dir)
+
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-e", "."],
+            cwd=extract_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        smoke = (
+            "from fastapi.testclient import TestClient; "
+            "from app.main import app; "
+            "c = TestClient(app); "
+            "r = c.post('/process', json={'payload': 'test@example.com', 'payload_id': 'smoke'}); "
+            "assert r.status_code == 200, r.text; "
+            "masked = r.json()['result']; "
+            "r2 = c.post('/process', json={'payload': masked, 'payload_id': 'smoke'}); "
+            "assert r2.status_code == 200 and r2.json()['result'] == 'test@example.com', r2.text; "
+            "print('smoke ok')"
+        )
+        subprocess.run(
+            [sys.executable, "-c", smoke],
+            cwd=extract_dir,
+            check=True,
+            capture_output=True,
+        )
+    print(f"Smoke-validated {output_path.resolve()}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, nargs="?", default=PROJECT_ROOT / "submission.zip")
@@ -142,7 +185,16 @@ def main() -> int:
         type=Path,
         help="validate an existing ZIP without rebuilding it",
     )
+    parser.add_argument(
+        "--smoke",
+        dest="smoke_only",
+        type=Path,
+        help="unpack, install, and smoke-test an existing ZIP",
+    )
     args = parser.parse_args()
+    if args.smoke_only is not None:
+        smoke_validate_zip(args.smoke_only)
+        return 0
     if args.validate_only is not None:
         validate_zip(args.validate_only)
         print(f"Validated {args.validate_only.resolve()}")

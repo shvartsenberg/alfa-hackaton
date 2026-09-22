@@ -149,9 +149,15 @@ python scripts/package_submission.py --validate submission.zip
 
 ## 15. Ограничения initial implementation
 
-- Обнаруживаются только EMAIL и PHONE (regex).
-- In-memory хранилище состояния (один процесс).
-- Нет реального NER, LLM, аутентификации и rate limiting.
+- Детекция построена на regex + валидаторах + маркерах (recall-first). Точность
+  по типам измеряется локальным бенчмарком (`python -m benchmarks.score`), а не
+  заявляется без измерений.
+- In-memory хранилище состояния (один процесс) — для нескольких воркеров
+  используйте Redis (`RESTORATION_STORE_BACKEND=redis`).
+- Нет реального NER и внешнего LLM в hot path (LLM-детектор опционален и
+  выключен по умолчанию).
+- Rate limiting реализован (глобальный, возвращает 429 с `Retry-After`).
+- Аутентификация/авторизация не реализованы.
 
 ## Настройка consumer (кратко)
 
@@ -159,3 +165,35 @@ python scripts/package_submission.py --validate submission.zip
 Укажите `enabled`, список `enabled_types`, стратегии `masking` для каждого
 типа и флаг `demasking.enabled`. Перезапустите сервис, чтобы политика
 загрузилась. Примеры: `default.yaml` и `demo.yaml`.
+
+## Выбор consumer
+
+По умолчанию используется `default` consumer. Для выбора другого consumer
+передайте необязательный заголовок `X-Consumer-ID`:
+
+```bash
+curl -X POST http://localhost:8000/process \
+  -H "Content-Type: application/json" \
+  -H "X-Consumer-ID: demo" \
+  -d '{"payload": "test@example.com", "payload_id": "example-1"}'
+```
+
+Неизвестный или отключённый consumer отклоняется с HTTP 403. Заголовок не
+меняет обязательный JSON-контракт `POST /process`.
+
+## Поддерживаемые типы ПД
+
+EMAIL, PHONE, BANK_CARD, INN, PASSPORT_NUMBER, PASSPORT_DIVISION_CODE,
+BIRTH_DATE, CVV, PIN, PERSON_NAME, BIRTH_PLACE, CITIZENSHIP, PASSPORT_ISSUER,
+PASSPORT_ISSUE_DATE, DRIVER_LICENSE, ADDRESS, COUNTRY, POSTAL_CODE, CITY,
+STREET, HOUSE, APARTMENT, CARDHOLDER_NAME.
+
+## Качество детекции
+
+```bash
+python -m benchmarks.score
+```
+
+Отчёт показывает span-level precision/recall/F1 по каждому типу и в целом, а
+также false positives на негативных кейсах. Не заявляйте качество 95% без
+реального прогона этого бенчмарка.

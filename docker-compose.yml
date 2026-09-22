@@ -8,14 +8,27 @@ services:
       - RESTORATION_TTL_SECONDS=3600
       - RESTORATION_STORE_BACKEND=redis
       - REDIS_URL=redis://redis:6379/0
+      # Must be set and identical across workers. Generate with:
+      # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - MASKING_KEY=${MASKING_KEY:?MASKING_KEY must be set}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     volumes:
       - ./configs:/app/configs
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # Redis is not exposed to the host; only the api service reaches it.
+    # For auth, pass a password via REDIS_PASSWORD and use
+    # redis://:${REDIS_PASSWORD}@redis:6379/0 in the api REDIS_URL.
+    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped

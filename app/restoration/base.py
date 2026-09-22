@@ -7,8 +7,11 @@ database. Swap implementations behind this interface.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 
 from app.restoration.models import RestorationState
+
+TransitionFn = Callable[[RestorationState | None], RestorationState | None]
 
 
 class RestorationStore(ABC):
@@ -24,4 +27,17 @@ class RestorationStore(ABC):
 
     @abstractmethod
     def delete(self, payload_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def transition(
+        self, payload_id: str, fn: TransitionFn
+    ) -> RestorationState | None:
+        """Atomically read the current state, apply ``fn``, and write the result.
+
+        ``fn`` receives the current state (or ``None``) and returns the new
+        state (or ``None`` to delete). The read-modify-write is atomic so that
+        concurrent requests for the same ``payload_id`` cannot corrupt the
+        lifecycle. Returns the resulting state.
+        """
         raise NotImplementedError

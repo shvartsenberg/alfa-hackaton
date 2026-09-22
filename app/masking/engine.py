@@ -32,7 +32,7 @@ class MaskingResult:
 
     masked_text: str
     entities: list[PIIEntity] = field(default_factory=list)
-    mappings: dict[str, str] = field(default_factory=dict)
+    mappings: list[tuple[str, str]] = field(default_factory=list)
     processing_time: float = 0.0
 
 
@@ -76,17 +76,17 @@ class MaskingEngine:
         present_types = {e.type for e in valid}
         ordered = sorted(valid, key=lambda e: e.start)
         pieces: list[str] = []
-        mappings: dict[str, str] = {}
+        mappings: list[tuple[str, str]] = []
         cursor = 0
         for entity in ordered:
             if not self._context_allows(entity.type, present_types, rules):
                 continue
-            strategy_enum = strategy_by_type.get(entity.type, MaskingStrategyEnum.PARTIAL_MASK)
+            strategy_enum = strategy_by_type.get(entity.type, MaskingStrategyEnum.FULL_MASK)
             strategy = self._strategy_factory.get_strategy(strategy_enum)
             replacement = strategy.mask(entity)
             pieces.append(text[cursor : entity.start])
             pieces.append(replacement)
-            mappings[replacement] = entity.value
+            mappings.append((replacement, entity.value))
             cursor = entity.end
         pieces.append(text[cursor:])
         elapsed = time.perf_counter() - started

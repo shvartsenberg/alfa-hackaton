@@ -25,10 +25,10 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint (ruff)
-        run: ruff check app tests scripts
+        run: ruff check .
 
       - name: Type check (mypy)
-        run: mypy app
+        run: mypy app scripts benchmarks
 
       - name: Run tests
         run: pytest
@@ -36,7 +36,11 @@ jobs:
       - name: Run concurrency tests
         run: pytest -m concurrency
 
+      - name: Run quality benchmark
+        run: python -m benchmarks.score
+
       - name: Validate submission packaging
         run: |
           python scripts/package_submission.py /tmp/submission.zip
           python scripts/package_submission.py --validate /tmp/submission.zip
+          python scripts/package_submission.py --smoke /tmp/submission.zip

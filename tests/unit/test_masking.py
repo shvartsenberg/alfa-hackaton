@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.enums import PIIType
+from app.core.enums import MaskingStrategy, PIIType
 from app.core.models import PIIEntity
 from app.masking.engine import DefaultMaskingStrategyFactory, MaskingEngine
 from app.masking.strategies.impl import FullMaskStrategy, PartialMaskStrategy
@@ -24,7 +24,10 @@ def _engine() -> MaskingEngine:
 
 
 def _mask(text: str, entities: list[PIIEntity]) -> str:
-    return _engine().mask(text, entities, {}).masked_text
+    # Tests exercise the PARTIAL_MASK reference format by default; the
+    # production default is FULL_MASK (safe), which is covered separately.
+    strategy_map = {e.type: MaskingStrategy.PARTIAL_MASK for e in entities}
+    return _engine().mask(text, entities, strategy_map).masked_text
 
 
 # --- Strategy-level tests -------------------------------------------------
@@ -156,14 +159,17 @@ def test_unknown_type_uses_default_partial_mask() -> None:
 def test_mappings_recorded() -> None:
     text = "Иванов Иван"
     entities = [_entity(PIIType.PERSON_NAME, "Иванов Иван", start=0)]
-    result = _engine().mask(text, entities, {})
-    assert result.mappings == {"И. И.": "Иванов Иван"}
+    result = _engine().mask(
+        text, entities, {PIIType.PERSON_NAME: MaskingStrategy.PARTIAL_MASK}
+    )
+    assert result.mappings == [("И. И.", "Иванов Иван")]
 
 
 def _mask_with_rules(
     text: str, entities: list[PIIEntity], rules: list[dict[str, object]] | None
 ) -> str:
-    return _engine().mask(text, entities, {}, context_rules=rules).masked_text
+    strategy_map = {e.type: MaskingStrategy.PARTIAL_MASK for e in entities}
+    return _engine().mask(text, entities, strategy_map, context_rules=rules).masked_text
 
 
 def test_empty_context_rules_use_default() -> None:

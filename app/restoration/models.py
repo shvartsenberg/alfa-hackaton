@@ -21,8 +21,9 @@ class RestorationState:
     original_hash: str
     original_text: str
     masked_text: str
-    mappings: dict[str, str] = field(default_factory=dict)
+    mappings: list[tuple[str, str]] = field(default_factory=list)
     entity_count: int = 0
+    detected_types: list[str] = field(default_factory=list)
     state: RestorationStateStatus = RestorationStateStatus.MASKED
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     expires_at: datetime | None = None
@@ -50,4 +51,6 @@ class RestorationState:
         if data.get("expires_at"):
             data["expires_at"] = datetime.fromisoformat(data["expires_at"])
         data["payload_id"] = payload_id
+        # JSON has no tuples; restore mappings as (replacement, original) pairs.
+        data["mappings"] = [tuple(pair) for pair in data.get("mappings", [])]
         return cls(**data)

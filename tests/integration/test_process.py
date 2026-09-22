@@ -297,3 +297,50 @@ def test_original_payload_after_demask_is_rejected(
     resp = _post(client, unique_payload_id, ORIGINAL)
     assert resp.status_code == 422
     assert resp.json()["error"] == "INVALID_PAYLOAD"
+
+# --- 19. Consumer selection via X-Consumer-ID header -------------------------
+
+
+def test_default_consumer_used_without_header(client: TestClient, unique_payload_id: str) -> None:
+    """Without a header, the default consumer (FULL_MASK for everything) applies."""
+    resp = client.post(
+        "/process",
+        json={"payload": "test@example.com", "payload_id": unique_payload_id},
+    )
+    assert resp.status_code == 200
+    # default.yaml uses FULL_MASK for EMAIL -> all alnum masked.
+    assert "test@example.com" not in resp.json()["result"]
+
+
+def test_demo_consumer_selected_via_header(client: TestClient, unique_payload_id: str) -> None:
+    """demo.yaml uses PARTIAL_MASK for EMAIL -> keeps first char + domain."""
+    resp = client.post(
+        "/process",
+        json={"payload": "test@example.com", "payload_id": unique_payload_id},
+        headers={"X-Consumer-ID": "demo"},
+    )
+    assert resp.status_code == 200
+    result = resp.json()["result"]
+    assert "test@example.com" not in result
+    assert "@example.com" in result  # PARTIAL_MASK keeps the domain
+
+
+def test_unknown_consumer_rejected(client: TestClient, unique_payload_id: str) -> None:
+    resp = client.post(
+        "/process",
+        json={"payload": "test@example.com", "payload_id": unique_payload_id},
+        headers={"X-Consumer-ID": "does-not-exist"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "CONSUMER_NOT_ALLOWED"
+
+
+def test_consumer_header_is_normalized(client: TestClient, unique_payload_id: str) -> None:
+    """Header value is trimmed/lowercased before use."""
+    resp = client.post(
+        "/process",
+        json={"payload": "test@example.com", "payload_id": unique_payload_id},
+        headers={"X-Consumer-ID": "  DEMO  "},
+    )
+    assert resp.status_code == 200
+    assert "@example.com" in resp.json()["result"]

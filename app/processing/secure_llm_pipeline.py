@@ -36,6 +36,6 @@ class SecureLLMPipeline:
         masking = self._masking_engine.mask(text, entities, policy.masking)
         llm_output = self._llm.generate(masking.masked_text)
         restored = llm_output
-        for replacement, original in masking.mappings.items():
+        for replacement, original in masking.mappings:
             restored = restored.replace(replacement, original)
         return restored

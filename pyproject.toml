@@ -36,7 +36,6 @@ include = ["app*"]
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests"]
-pythonpath = ["."]
 addopts = "-q -m 'not concurrency and not slow and not performance'"
 markers = [
     "integration: integration tests that exercise the full HTTP stack",

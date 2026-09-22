@@ -1,6 +1,11 @@
-"""Score the regex detector against a benchmark dataset.
+"""Score the detector against a benchmark dataset.
 
-Run: python benchmarks/score.py
+Run from the repository root:
+
+    python benchmarks/score.py
+
+Reports span-level precision, recall and F1 per PII type and overall, plus
+false positives on negative cases.
 """
 
 from __future__ import annotations
@@ -12,10 +17,15 @@ from typing import cast
 
 import yaml
 
-from app.core.models import DetectionContext
-from app.detection.context.resolver import ContextResolver
-from app.detection.engine import DetectionEngine
-from app.detection.regex.detector import RegexDetector
+# Make the project root importable when run as `python benchmarks/score.py`.
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from app.core.models import DetectionContext  # noqa: E402
+from app.detection.context.resolver import ContextResolver  # noqa: E402
+from app.detection.engine import DetectionEngine  # noqa: E402
+from app.detection.regex.detector import RegexDetector  # noqa: E402
 
 _DATASET_PATH = Path(__file__).resolve().parent / "dataset.yaml"
 _F1_THRESHOLD = 0.7
@@ -29,6 +39,10 @@ def _load_dataset() -> list[dict[str, object]]:
 
 def _run_engine() -> DetectionEngine:
     return DetectionEngine([RegexDetector()], ContextResolver())
+
+
+def _span_key(pii_type: str, start: int, end: int) -> tuple[str, int, int]:
+    return (pii_type, start, end)
 
 
 def _score() -> tuple[
@@ -51,19 +65,26 @@ def _score() -> tuple[
         assert isinstance(expected, list)
 
         found = engine.detect(text, context).entities
-        found_set = {(e.type.value, e.value) for e in found}
-        expected_set = {(e["type"], e["text"]) for e in expected}
+        found_spans = {
+            _span_key(e.type.value, e.start, e.end): e.value for e in found
+        }
+        expected_spans = {
+            _span_key(str(e["type"]), int(e["start"]), int(e["end"])): str(e["text"])
+            for e in expected
+        }
 
-        for pii_type, value in found_set:
-            if (pii_type, value) in expected_set:
+        for key, value in found_spans.items():
+            pii_type = key[0]
+            if key in expected_spans:
                 tp[pii_type] += 1
             else:
                 fp[pii_type] += 1
-                if not expected_set:
+                if not expected_spans:
                     false_positives.append((case_id, pii_type, value))
 
-        for pii_type, value in expected_set:
-            if (pii_type, value) not in found_set:
+        for key in expected_spans:
+            pii_type = key[0]
+            if key not in found_spans:
                 fn[pii_type] += 1
 
     return (tp, fp, fn), false_positives

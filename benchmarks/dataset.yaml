@@ -1,143 +1,498 @@
 - id: pos_email_001
-  text: "Свяжитесь со мной по почте a@b.ru в любое время."
+  text: Свяжитесь со мной по почте a@b.ru в любое время.
   expected:
-    - {type: EMAIL, text: "a@b.ru"}
-
+  - type: EMAIL
+    text: a@b.ru
+    start: 27
+    end: 33
 - id: pos_email_002
-  text: "Мой рабочий адрес — ivan.petrov@company.com, жду ответа."
+  text: Мой рабочий адрес — ivan.petrov@company.com, жду ответа.
   expected:
-    - {type: EMAIL, text: "ivan.petrov@company.com"}
-
+  - type: EMAIL
+    text: ivan.petrov@company.com
+    start: 20
+    end: 43
+- id: pos_email_003
+  text: 'Почта: user_name+tag@sub.domain.org для связи.'
+  expected:
+  - type: EMAIL
+    text: user_name+tag@sub.domain.org
+    start: 7
+    end: 35
 - id: pos_phone_001
-  text: "Позвоните мне по номеру +7 999 123-45-67 после обеда."
+  text: Позвоните мне по номеру +7 999 123-45-67 после обеда.
   expected:
-    - {type: PHONE, text: "+7 999 123-45-67"}
-
+  - type: PHONE
+    text: +7 999 123-45-67
+    start: 24
+    end: 40
 - id: pos_phone_002
-  text: "Мобильный телефон 8(495)123-45-67 доступен с 9 утра."
+  text: Мобильный телефон 8(495)123-45-67 доступен с 9 утра.
   expected:
-    - {type: PHONE, text: "8(495)123-45-67"}
-
+  - type: PHONE
+    text: 8(495)123-45-67
+    start: 18
+    end: 33
+- id: pos_phone_003
+  text: Звоните на 8 903 555 66 77 в рабочее время.
+  expected:
+  - type: PHONE
+    text: 8 903 555 66 77
+    start: 11
+    end: 26
 - id: pos_card_001
-  text: "Оплата картой 4111 1111 1111 1111 прошла успешно."
+  text: Оплата картой 4111 1111 1111 1111 прошла успешно.
   expected:
-    - {type: BANK_CARD, text: "4111 1111 1111 1111"}
-
+  - type: BANK_CARD
+    text: 4111 1111 1111 1111
+    start: 14
+    end: 33
 - id: pos_card_002
-  text: "Реквизиты карты 5555 5555 5555 4444 для возврата средств."
+  text: Реквизиты карты 5555 5555 5555 4444 для возврата средств.
   expected:
-    - {type: BANK_CARD, text: "5555 5555 5555 4444"}
-
+  - type: BANK_CARD
+    text: 5555 5555 5555 4444
+    start: 16
+    end: 35
+- id: pos_card_003
+  text: Карта 4539-1488-0343-6467 привязана к счёту.
+  expected:
+  - type: BANK_CARD
+    text: 4539-1488-0343-6467
+    start: 6
+    end: 25
 - id: pos_inn_001
-  text: "ИНН физического лица 7707083893 подтверждён налоговой."
+  text: ИНН физического лица 7707083893 подтверждён налоговой.
   expected:
-    - {type: INN, text: "7707083893"}
-
+  - type: INN
+    text: '7707083893'
+    start: 21
+    end: 31
 - id: pos_inn_002
-  text: "ИНН гражданина 500100732259 указан в заявлении."
+  text: ИНН гражданина 500100732259 указан в заявлении.
   expected:
-    - {type: INN, text: "500100732259"}
-
+  - type: INN
+    text: '500100732259'
+    start: 15
+    end: 27
 - id: pos_passport_001
-  text: "Серия и номер паспорта 4510 123456 выданы в 2015 году."
+  text: Серия и номер паспорта 4510 123456 выданы в 2015 году.
   expected:
-    - {type: PASSPORT_NUMBER, text: "4510 123456"}
-
+  - type: PASSPORT_NUMBER
+    text: 4510 123456
+    start: 23
+    end: 34
 - id: pos_passport_002
-  text: "Паспорт 6203 987654 был выдан отделом УФМС."
+  text: Паспорт 6203 987654 был выдан отделом УФМС.
   expected:
-    - {type: PASSPORT_NUMBER, text: "6203 987654"}
-
+  - type: PASSPORT_NUMBER
+    text: 6203 987654
+    start: 8
+    end: 19
 - id: pos_division_001
-  text: "Код подразделения 770-123 указан в паспорте."
+  text: Код подразделения 770-123 указан в паспорте.
   expected:
-    - {type: PASSPORT_DIVISION_CODE, text: "770-123"}
-
+  - type: PASSPORT_DIVISION_CODE
+    text: 770-123
+    start: 18
+    end: 25
 - id: pos_division_002
-  text: "В паспорте стоит код подразделения 450-987."
+  text: В паспорте стоит код подразделения 450-987.
   expected:
-    - {type: PASSPORT_DIVISION_CODE, text: "450-987"}
-
+  - type: PASSPORT_DIVISION_CODE
+    text: 450-987
+    start: 35
+    end: 42
 - id: pos_birth_001
-  text: "Дата рождения 12.03.1985 г.р. подтверждена документами."
+  text: Дата рождения 12.03.1985 г.р. подтверждена документами.
   expected:
-    - {type: BIRTH_DATE, text: "12.03.1985"}
-
+  - type: BIRTH_DATE
+    text: 12.03.1985
+    start: 14
+    end: 24
 - id: pos_birth_002
-  text: "Клиент родился 05.07.1990, дата рожд. указана в анкете."
+  text: Клиент родился 05.07.1990, дата рожд. указана в анкете.
   expected:
-    - {type: BIRTH_DATE, text: "05.07.1990"}
-
+  - type: BIRTH_DATE
+    text: 05.07.1990
+    start: 15
+    end: 25
+- id: pos_birth_003
+  text: Дата рождения 15 января 1980 года.
+  expected:
+  - type: BIRTH_DATE
+    text: 15 января 1980
+    start: 14
+    end: 28
 - id: pos_cvv_001
-  text: "Код проверки cvv 123 на обратной стороне карты."
+  text: Код проверки cvv 123 на обратной стороне карты.
   expected:
-    - {type: CVV, text: "123"}
-
+  - type: CVV
+    text: '123'
+    start: 17
+    end: 20
 - id: pos_cvv_002
-  text: "Введите cvc 456 для подтверждения операции."
+  text: Введите cvc 456 для подтверждения операции.
   expected:
-    - {type: CVV, text: "456"}
-
+  - type: CVV
+    text: '456'
+    start: 12
+    end: 15
 - id: pos_pin_001
-  text: "Пин-код pin 1234 не сообщайте никому."
+  text: Пин-код pin 1234 не сообщайте никому.
   expected:
-    - {type: PIN, text: "1234"}
-
+  - type: PIN
+    text: '1234'
+    start: 12
+    end: 16
 - id: pos_pin_002
-  text: "Ваш пин 5678 используется для входа в приложение."
+  text: Ваш пин 5678 используется для входа в приложение.
   expected:
-    - {type: PIN, text: "5678"}
-
+  - type: PIN
+    text: '5678'
+    start: 8
+    end: 12
+- id: pos_name_001
+  text: Клиент Иванов Иван Иванович обратился в банк.
+  expected:
+  - type: PERSON_NAME
+    text: Иванов Иван Иванович
+    start: 7
+    end: 27
+- id: pos_name_002
+  text: Гражданин Петров Пётр Петрович подписал договор.
+  expected:
+  - type: PERSON_NAME
+    text: Петров Пётр Петрович
+    start: 10
+    end: 30
+- id: pos_name_003
+  text: Заявитель Сидорова Анна подала документы.
+  expected:
+  - type: PERSON_NAME
+    text: Сидорова Анна
+    start: 10
+    end: 23
+- id: pos_birthplace_001
+  text: 'Место рождения: город Москва, указано в анкете.'
+  expected:
+  - type: BIRTH_PLACE
+    text: город Москва
+    start: 16
+    end: 28
+- id: pos_birthplace_002
+  text: Родился в городе Санкт-Петербург в 1985 году.
+  expected:
+  - type: BIRTH_PLACE
+    text: городе Санкт-Петербург
+    start: 10
+    end: 32
+- id: pos_citizenship_001
+  text: Гражданство Российская Федерация подтверждено.
+  expected:
+  - type: CITIZENSHIP
+    text: Российская Федерация
+    start: 12
+    end: 32
+- id: pos_citizenship_002
+  text: Гражданин Республика Беларусь проживает в Москве.
+  expected:
+  - type: CITIZENSHIP
+    text: Республика Беларусь
+    start: 10
+    end: 29
+- id: pos_issuer_001
+  text: Паспорт выдан Отделом УФМС России по г. Москве.
+  expected:
+  - type: PASSPORT_ISSUER
+    text: Отделом УФМС России по г. Москве
+    start: 14
+    end: 46
+- id: pos_issuer_002
+  text: 'Кем выдан: ГУ МВД России по Московской области.'
+  expected:
+  - type: PASSPORT_ISSUER
+    text: ГУ МВД России по Московской области
+    start: 11
+    end: 46
+- id: pos_issue_date_001
+  text: Дата выдачи 15.03.2015 указана в паспорте.
+  expected:
+  - type: PASSPORT_ISSUE_DATE
+    text: 15.03.2015
+    start: 12
+    end: 22
+- id: pos_issue_date_002
+  text: Паспорт выдан 20.08.2010 года.
+  expected:
+  - type: PASSPORT_ISSUE_DATE
+    text: 20.08.2010
+    start: 14
+    end: 24
+- id: pos_driver_001
+  text: Водительское удостоверение 77 12 345678 выдано в 2018 году.
+  expected:
+  - type: DRIVER_LICENSE
+    text: 77 12 345678
+    start: 27
+    end: 39
+- id: pos_driver_002
+  text: Права 9912345678 действительны до 2028 года.
+  expected:
+  - type: DRIVER_LICENSE
+    text: '9912345678'
+    start: 6
+    end: 16
+- id: pos_address_001
+  text: 'Адрес: г. Москва, ул. Тверская, д. 12, кв. 34.'
+  expected:
+  - type: ADDRESS
+    text: г. Москва, ул. Тверская, д. 12, кв. 34
+    start: 7
+    end: 45
+- id: pos_address_002
+  text: 'Проживает по адресу: Санкт-Петербург, Невский проспект, д. 5.'
+  expected:
+  - type: ADDRESS
+    text: Санкт-Петербург, Невский проспект, д. 5
+    start: 21
+    end: 60
+- id: pos_country_001
+  text: 'Страна: Россия, регион проживания указан ниже.'
+  expected:
+  - type: COUNTRY
+    text: Россия
+    start: 8
+    end: 14
+- id: pos_country_002
+  text: 'Гражданство: Казахстан, документы в порядке.'
+  expected:
+  - type: COUNTRY
+    text: Казахстан
+    start: 13
+    end: 22
+- id: pos_postal_001
+  text: Почтовый индекс 101000 для корреспонденции.
+  expected:
+  - type: POSTAL_CODE
+    text: '101000'
+    start: 16
+    end: 22
+- id: pos_postal_002
+  text: 'Индекс: 125009, город Москва.'
+  expected:
+  - type: POSTAL_CODE
+    text: '125009'
+    start: 8
+    end: 14
+- id: pos_city_001
+  text: Город Казань, улица Баумана.
+  expected:
+  - type: CITY
+    text: Казань
+    start: 6
+    end: 12
+- id: pos_city_002
+  text: г. Новосибирск, проспект Красный.
+  expected:
+  - type: CITY
+    text: Новосибирск
+    start: 3
+    end: 14
+- id: pos_street_001
+  text: Улица Ленина, дом 10.
+  expected:
+  - type: STREET
+    text: Ленина
+    start: 6
+    end: 12
+- id: pos_street_002
+  text: ул. Садовая, д. 5, кв. 7.
+  expected:
+  - type: STREET
+    text: Садовая
+    start: 4
+    end: 11
+- id: pos_house_001
+  text: Дом 12, квартира 34.
+  expected:
+  - type: HOUSE
+    text: '12'
+    start: 4
+    end: 6
+- id: pos_house_002
+  text: д. 5А, строение 2.
+  expected:
+  - type: HOUSE
+    text: 5А
+    start: 3
+    end: 5
+- id: pos_apartment_001
+  text: Квартира 34, подъезд 2.
+  expected:
+  - type: APARTMENT
+    text: '34'
+    start: 9
+    end: 11
+- id: pos_apartment_002
+  text: кв. 7, этаж 3.
+  expected:
+  - type: APARTMENT
+    text: '7'
+    start: 4
+    end: 5
+- id: pos_cardholder_001
+  text: Держатель карты IVANOV IVAN указан на лицевой стороне.
+  expected:
+  - type: CARDHOLDER_NAME
+    text: IVANOV IVAN
+    start: 16
+    end: 27
+- id: pos_cardholder_002
+  text: 'Cardholder: PETROV PETR, срок действия 12/28.'
+  expected:
+  - type: CARDHOLDER_NAME
+    text: PETROV PETR
+    start: 12
+    end: 23
 - id: pos_multi_001
-  text: "Клиент Иванов, тел. +7 999 111-22-33, почта ivanov@mail.ru, паспорт 4510 123456."
+  text: Клиент Иванов Иван, тел. +7 999 111-22-33, почта ivanov@mail.ru, паспорт 4510
+    123456.
   expected:
-    - {type: PHONE, text: "+7 999 111-22-33"}
-    - {type: EMAIL, text: "ivanov@mail.ru"}
-    - {type: PASSPORT_NUMBER, text: "4510 123456"}
-
+  - type: PERSON_NAME
+    text: Иванов Иван
+    start: 7
+    end: 18
+  - type: PHONE
+    text: +7 999 111-22-33
+    start: 25
+    end: 41
+  - type: EMAIL
+    text: ivanov@mail.ru
+    start: 49
+    end: 63
+  - type: PASSPORT_NUMBER
+    text: 4510 123456
+    start: 73
+    end: 84
 - id: pos_multi_002
-  text: "Карта 4111 1111 1111 1111, код подразделения 770-123, дата рожд. 12.03.1985."
+  text: Карта 4111 1111 1111 1111, код подразделения 770-123, дата рожд. 12.03.1985.
   expected:
-    - {type: BANK_CARD, text: "4111 1111 1111 1111"}
-    - {type: PASSPORT_DIVISION_CODE, text: "770-123"}
-    - {type: BIRTH_DATE, text: "12.03.1985"}
-
+  - type: BANK_CARD
+    text: 4111 1111 1111 1111
+    start: 6
+    end: 25
+  - type: PASSPORT_DIVISION_CODE
+    text: 770-123
+    start: 45
+    end: 52
+  - type: BIRTH_DATE
+    text: 12.03.1985
+    start: 65
+    end: 75
+- id: pos_multi_003
+  text: 'Гражданин Петров Пётр, ИНН 7707083893, адрес: г. Москва, ул. Тверская, д.
+    12.'
+  expected:
+  - type: PERSON_NAME
+    text: Петров Пётр
+    start: 10
+    end: 21
+  - type: INN
+    text: '7707083893'
+    start: 27
+    end: 37
+  - type: ADDRESS
+    text: г. Москва, ул. Тверская, д. 12
+    start: 46
+    end: 76
+- id: pos_repeat_001
+  text: 'Клиент Иванов Иван, повторно: Иванов Иван подтвердил данные.'
+  expected:
+  - type: PERSON_NAME
+    text: Иванов Иван
+    start: 7
+    end: 18
+  - type: PERSON_NAME
+    text: Иванов Иван
+    start: 30
+    end: 41
+- id: pos_overlap_001
+  text: Карта 4111 1111 1111 1111, пин 1234.
+  expected:
+  - type: BANK_CARD
+    text: 4111 1111 1111 1111
+    start: 6
+    end: 25
+  - type: PIN
+    text: '1234'
+    start: 31
+    end: 35
 - id: neg_pushkin_001
-  text: "Александр Сергеевич Пушкин родился в 1799 году в Москве."
+  text: Александр Сергеевич Пушкин родился в 1799 году в Москве.
   expected: []
-
 - id: neg_bank_001
-  text: "Отделение банка №8595 работает с 9 до 18 часов."
+  text: Отделение банка №8595 работает с 9 до 18 часов.
   expected: []
-
 - id: neg_random_digits_001
-  text: "Номер счёта 1234 5678 9012 3456 не является картой."
+  text: Номер счёта 1234 5678 9012 3456 не является картой.
   expected: []
-
 - id: neg_contract_001
-  text: "Договор от 12.03.2024 подписан обеими сторонами."
+  text: Договор от 12.03.2024 подписан обеими сторонами.
   expected: []
-
 - id: neg_price_001
-  text: "Итоговая цена 450 рублей за единицу товара."
+  text: Итоговая цена 450 рублей за единицу товара.
   expected: []
-
 - id: neg_cabinet_001
-  text: "Приём ведётся в кабинете 305 на третьем этаже."
+  text: Приём ведётся в кабинете 305 на третьем этаже.
   expected: []
-
 - id: neg_username_001
-  text: "Напишите @username в комментариях к посту."
+  text: Напишите @username в комментариях к посту.
   expected: []
-
 - id: neg_inn_org_001
-  text: "ИНН организации 1234567890 указан в реквизитах."
+  text: ИНН организации 1234567890 указан в реквизитах.
   expected: []
-
 - id: neg_date_001
-  text: "Срок поставки — 15.08.2025, оплата по факту."
+  text: Срок поставки — 15.08.2025, оплата по факту.
   expected: []
-
 - id: neg_phone_001
-  text: "Номер заказа 12345, статус доставки обновлён."
+  text: Номер заказа 12345, статус доставки обновлён.
   expected: []
+- id: neg_org_inn_002
+  text: ООО «Ромашка», ИНН 7701234567, КПП 770101001.
+  expected: []
+- id: neg_plain_name_001
+  text: Иван и Мария гуляли по парку вчера вечером.
+  expected: []
+- id: neg_plain_city_001
+  text: Москва — столица России, крупный мегаполис.
+  expected: []
+- id: neg_plain_street_001
+  text: Улица была пуста в этот поздний час.
+  expected: []
+- id: neg_plain_house_001
+  text: Дом стоял на краю деревни.
+  expected: []
+- id: neg_plain_apartment_001
+  text: Квартира была просторной и светлой.
+  expected: []
+- id: neg_plain_cvv_001
+  text: Код 123 не является проверочным.
+  expected: []
+- id: neg_plain_pin_001
+  text: Число 5678 встречается в тексте.
+  expected: []
+- id: pos_partial_001
+  text: Карта 4111 1111 1111 1111, срок действия 12/28.
+  expected:
+  - type: BANK_CARD
+    text: 4111 1111 1111 1111
+    start: 6
+    end: 25
+- id: pos_partial_002
+  text: Телефон +7 999 123-45-67, добавочный 123.
+  expected:
+  - type: PHONE
+    text: +7 999 123-45-67
+    start: 8
+    end: 24

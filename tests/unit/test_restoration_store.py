@@ -110,11 +110,11 @@ def test_full_store_rejects_new_state_without_losing_live_mapping() -> None:
 
 def test_state_json_roundtrip() -> None:
     state = _state("abc")
-    state.mappings = {"****": "secret"}
+    state.mappings = [("****", "secret")]
     state.entity_count = 1
     restored = RestorationState.from_json("abc", state.to_json())
     assert restored.payload_id == "abc"
     assert restored.original_text == "secret"
-    assert restored.mappings == {"****": "secret"}
+    assert restored.mappings == [("****", "secret")]
     assert restored.entity_count == 1
     assert restored.state == RestorationStateStatus.MASKED
