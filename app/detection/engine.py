@@ -7,6 +7,7 @@ import time
 from app.core.models import DetectionContext, DetectionResult, PIIEntity
 from app.detection.base import PIIDetector
 from app.detection.context.resolver import ContextResolver
+from app.detection.resolution import resolve_spans
 
 
 class DetectionEngine:
@@ -28,7 +29,7 @@ class DetectionEngine:
         candidates: list[PIIEntity] = []
         for detector in self._detectors:
             candidates.extend(detector.detect(text, context))
-        resolved = self._context_resolver.resolve(candidates, context)
+        resolved = resolve_spans(self._context_resolver.resolve(candidates, context))
         elapsed = time.perf_counter() - started
         return DetectionResult(
             entities=resolved,

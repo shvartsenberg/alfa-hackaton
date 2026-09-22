@@ -1,0 +1,143 @@
+- id: pos_email_001
+  text: "Свяжитесь со мной по почте a@b.ru в любое время."
+  expected:
+    - {type: EMAIL, text: "a@b.ru"}
+
+- id: pos_email_002
+  text: "Мой рабочий адрес — ivan.petrov@company.com, жду ответа."
+  expected:
+    - {type: EMAIL, text: "ivan.petrov@company.com"}
+
+- id: pos_phone_001
+  text: "Позвоните мне по номеру +7 999 123-45-67 после обеда."
+  expected:
+    - {type: PHONE, text: "+7 999 123-45-67"}
+
+- id: pos_phone_002
+  text: "Мобильный телефон 8(495)123-45-67 доступен с 9 утра."
+  expected:
+    - {type: PHONE, text: "8(495)123-45-67"}
+
+- id: pos_card_001
+  text: "Оплата картой 4111 1111 1111 1111 прошла успешно."
+  expected:
+    - {type: BANK_CARD, text: "4111 1111 1111 1111"}
+
+- id: pos_card_002
+  text: "Реквизиты карты 5555 5555 5555 4444 для возврата средств."
+  expected:
+    - {type: BANK_CARD, text: "5555 5555 5555 4444"}
+
+- id: pos_inn_001
+  text: "ИНН физического лица 7707083893 подтверждён налоговой."
+  expected:
+    - {type: INN, text: "7707083893"}
+
+- id: pos_inn_002
+  text: "ИНН гражданина 500100732259 указан в заявлении."
+  expected:
+    - {type: INN, text: "500100732259"}
+
+- id: pos_passport_001
+  text: "Серия и номер паспорта 4510 123456 выданы в 2015 году."
+  expected:
+    - {type: PASSPORT_NUMBER, text: "4510 123456"}
+
+- id: pos_passport_002
+  text: "Паспорт 6203 987654 был выдан отделом УФМС."
+  expected:
+    - {type: PASSPORT_NUMBER, text: "6203 987654"}
+
+- id: pos_division_001
+  text: "Код подразделения 770-123 указан в паспорте."
+  expected:
+    - {type: PASSPORT_DIVISION_CODE, text: "770-123"}
+
+- id: pos_division_002
+  text: "В паспорте стоит код подразделения 450-987."
+  expected:
+    - {type: PASSPORT_DIVISION_CODE, text: "450-987"}
+
+- id: pos_birth_001
+  text: "Дата рождения 12.03.1985 г.р. подтверждена документами."
+  expected:
+    - {type: BIRTH_DATE, text: "12.03.1985"}
+
+- id: pos_birth_002
+  text: "Клиент родился 05.07.1990, дата рожд. указана в анкете."
+  expected:
+    - {type: BIRTH_DATE, text: "05.07.1990"}
+
+- id: pos_cvv_001
+  text: "Код проверки cvv 123 на обратной стороне карты."
+  expected:
+    - {type: CVV, text: "123"}
+
+- id: pos_cvv_002
+  text: "Введите cvc 456 для подтверждения операции."
+  expected:
+    - {type: CVV, text: "456"}
+
+- id: pos_pin_001
+  text: "Пин-код pin 1234 не сообщайте никому."
+  expected:
+    - {type: PIN, text: "1234"}
+
+- id: pos_pin_002
+  text: "Ваш пин 5678 используется для входа в приложение."
+  expected:
+    - {type: PIN, text: "5678"}
+
+- id: pos_multi_001
+  text: "Клиент Иванов, тел. +7 999 111-22-33, почта ivanov@mail.ru, паспорт 4510 123456."
+  expected:
+    - {type: PHONE, text: "+7 999 111-22-33"}
+    - {type: EMAIL, text: "ivanov@mail.ru"}
+    - {type: PASSPORT_NUMBER, text: "4510 123456"}
+
+- id: pos_multi_002
+  text: "Карта 4111 1111 1111 1111, код подразделения 770-123, дата рожд. 12.03.1985."
+  expected:
+    - {type: BANK_CARD, text: "4111 1111 1111 1111"}
+    - {type: PASSPORT_DIVISION_CODE, text: "770-123"}
+    - {type: BIRTH_DATE, text: "12.03.1985"}
+
+- id: neg_pushkin_001
+  text: "Александр Сергеевич Пушкин родился в 1799 году в Москве."
+  expected: []
+
+- id: neg_bank_001
+  text: "Отделение банка №8595 работает с 9 до 18 часов."
+  expected: []
+
+- id: neg_random_digits_001
+  text: "Номер счёта 1234 5678 9012 3456 не является картой."
+  expected: []
+
+- id: neg_contract_001
+  text: "Договор от 12.03.2024 подписан обеими сторонами."
+  expected: []
+
+- id: neg_price_001
+  text: "Итоговая цена 450 рублей за единицу товара."
+  expected: []
+
+- id: neg_cabinet_001
+  text: "Приём ведётся в кабинете 305 на третьем этаже."
+  expected: []
+
+- id: neg_username_001
+  text: "Напишите @username в комментариях к посту."
+  expected: []
+
+- id: neg_inn_org_001
+  text: "ИНН организации 1234567890 указан в реквизитах."
+  expected: []
+
+- id: neg_date_001
+  text: "Срок поставки — 15.08.2025, оплата по факту."
+  expected: []
+
+- id: neg_phone_001
+  text: "Номер заказа 12345, статус доставки обновлён."
+  expected: []

@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    detection_llm_enabled: bool = False
+    llm_api_key: str = ""
+    llm_base_url: str = ""
+
 
 def get_settings() -> Settings:
     """Return a cached settings instance."""
