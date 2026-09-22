@@ -1,4 +1,4 @@
-.PHONY: install lint typecheck test run docker-build docker-up perf smoke
+.PHONY: install lint typecheck test test-concurrency run docker-build docker-up perf perf-report smoke package package-validate
 
 install:
 	pip install -e ".[dev]"
@@ -10,7 +10,10 @@ typecheck:
 	mypy app
 
 test:
-	pytest
+	pytest -m "not concurrency and not slow and not performance"
+
+test-concurrency:
+	pytest -m concurrency
 
 run:
 	uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -24,5 +27,14 @@ docker-up:
 perf:
 	locust -f tests/performance/locustfile.py --host http://localhost:8000
 
+perf-report:
+	python scripts/run_performance.py --host http://localhost:8000 --scenario mixed
+
 smoke:
 	python scripts/smoke_test.py
+
+package:
+	python scripts/package_submission.py
+
+package-validate:
+	python scripts/package_submission.py --validate submission.zip

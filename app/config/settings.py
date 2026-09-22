@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     log_level: str = "INFO"
+    log_format: str = "json"
 
     restoration_ttl_seconds: int = 3600
     restoration_max_entries: int = 1_000_000

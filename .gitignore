@@ -2,24 +2,30 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+*.egg
 .eggs/
 build/
 dist/
 
 # Virtual environments
 .venv/
+.deps/
 venv/
 env/
+ENV/
 
 # Test / tooling caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
+coverage/
 htmlcov/
 
 # Environment / secrets
 .env
+.env.*
+!.env.example
 *.key
 *.pem
 
@@ -31,3 +37,7 @@ htmlcov/
 Thumbs.db
 .idea/
 .vscode/
+
+# Submission artifacts
+submission.zip
+artifacts/

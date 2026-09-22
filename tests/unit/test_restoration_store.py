@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from app.core.enums import RestorationStateStatus
+from app.core.exceptions import ServiceOverloadedError
 from app.restoration.memory import InMemoryRestorationStore
 from app.restoration.models import RestorationState
 
@@ -57,7 +60,7 @@ def test_expired_entries_evicted_on_save() -> None:
 
 
 def test_save_performance_does_not_grow_with_size() -> None:
-    store = InMemoryRestorationStore(max_entries=200_000)
+    store = InMemoryRestorationStore(max_entries=1_000_000)
     now = time.monotonic()
     # Fill directly to avoid 200k Fernet encryptions; entries are not expired.
     for i in range(200_000):
@@ -87,3 +90,18 @@ def test_roundtrip_returns_original() -> None:
     assert restored.original_text == "secret"
     assert restored.masked_text == "****"
     assert restored.state == RestorationStateStatus.MASKED
+
+
+def test_full_store_rejects_new_state_without_losing_live_mapping() -> None:
+    """A full store must preserve every live reversible mapping."""
+    store = InMemoryRestorationStore(ttl_seconds=3600, max_entries=3)
+    for i in range(3):
+        store.save(f"k{i}", _state(f"k{i}"))
+    assert len(store._data) == 3
+
+    with pytest.raises(ServiceOverloadedError):
+        store.save("k3", _state("k3"))
+
+    assert len(store._data) == 3
+    assert store.get("k0") is not None
+    assert store.get("k3") is None

@@ -11,6 +11,7 @@ not from a primitive "payload_id exists" check. This makes retries safe:
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 
 from app.core.enums import Operation, RestorationStateStatus
@@ -26,6 +27,8 @@ from app.observability.metrics import MetricsRecorder, Timer
 from app.policies.models import ConsumerPolicy
 from app.restoration.base import RestorationStore
 from app.restoration.models import RestorationState
+
+_PAYLOAD_LOCK_STRIPES = 256
 
 
 @dataclass(slots=True)
@@ -53,6 +56,11 @@ class ProcessService:
         self._masking_engine = masking_engine
         self._restoration_store = restoration_store
         self._metrics = metrics
+        # A bounded striped-lock table makes get -> route -> save atomic for a
+        # payload_id without retaining one lock for every identifier forever.
+        self._payload_locks = tuple(
+            threading.Lock() for _ in range(_PAYLOAD_LOCK_STRIPES)
+        )
 
     def process(
         self,
@@ -64,15 +72,18 @@ class ProcessService:
             raise InvalidPayloadError("payload and payload_id are required")
 
         with Timer() as timer:
-            existing = self._restoration_store.get(payload_id)
-            if existing is None:
-                outcome = self._mask(payload, payload_id, policy)
-            else:
-                outcome = self._route(existing, payload, payload_id, policy)
+            lock = self._payload_locks[hash(payload_id) % len(self._payload_locks)]
+            with lock:
+                existing = self._restoration_store.get(payload_id)
+                if existing is None:
+                    outcome = self._mask(payload, payload_id, policy)
+                else:
+                    outcome = self._route(existing, payload, payload_id, policy)
 
+        outcome.duration_ms = timer.elapsed_ms
         self._metrics.record_request(outcome.operation.value, timer.elapsed_ms)
         self._metrics.record_entities(outcome.entity_count)
-        self._metrics.record_payload_size(len(payload))
+        self._metrics.record_payload_size(len(payload.encode("utf-8")))
         return outcome
 
     def _route(

@@ -27,6 +27,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet
 
+from app.core.exceptions import ServiceOverloadedError
 from app.restoration.base import RestorationStore
 from app.restoration.models import RestorationState
 
@@ -117,8 +118,12 @@ class InMemoryRestorationStore(RestorationStore):
         with self._lock:
             self._evict_expired_locked()
             if payload_id not in self._data and len(self._data) >= self._max_entries:
-                # Still full after eviction: drop the oldest entry to bound memory.
-                self._data.popitem(last=False)
+                # Never sacrifice a live mapping: doing so would make a
+                # previously issued mask impossible to restore.
+                raise ServiceOverloadedError(
+                    "restoration store capacity exceeded",
+                    retry_after=1,
+                )
             if payload_id in self._data:
                 # Refresh: treat the entry as freshly inserted for eviction order.
                 self._data.move_to_end(payload_id)
