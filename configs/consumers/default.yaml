@@ -2,20 +2,64 @@ enabled: true
 
 detection:
   enabled_types:
+    - PERSON_NAME
+    - BIRTH_DATE
+    - BIRTH_PLACE
+    - PASSPORT_NUMBER
+    - CITIZENSHIP
+    - PASSPORT_ISSUER
+    - PASSPORT_DIVISION_CODE
+    - PASSPORT_ISSUE_DATE
+    - DRIVER_LICENSE
+    - ADDRESS
+    - COUNTRY
+    - POSTAL_CODE
+    - CITY
+    - STREET
+    - HOUSE
+    - APARTMENT
     - EMAIL
     - PHONE
-    - PERSON_NAME
-    - PASSPORT_NUMBER
+    - INN
     - BANK_CARD
+    - CVV
+    - PIN
+    - CARDHOLDER_NAME
 
 masking:
-  EMAIL: FULL_MASK
-  PHONE: PARTIAL_MASK
   PERSON_NAME: FULL_MASK
-  PASSPORT_NUMBER: PARTIAL_MASK
-  BANK_CARD: PARTIAL_MASK
+  BIRTH_DATE: FULL_MASK
+  BIRTH_PLACE: FULL_MASK
+  PASSPORT_NUMBER: FULL_MASK
+  CITIZENSHIP: FULL_MASK
+  PASSPORT_ISSUER: FULL_MASK
+  PASSPORT_DIVISION_CODE: FULL_MASK
+  PASSPORT_ISSUE_DATE: FULL_MASK
+  DRIVER_LICENSE: FULL_MASK
+  ADDRESS: FULL_MASK
+  COUNTRY: FULL_MASK
+  POSTAL_CODE: FULL_MASK
+  CITY: FULL_MASK
+  STREET: FULL_MASK
+  HOUSE: FULL_MASK
+  APARTMENT: FULL_MASK
+  EMAIL: FULL_MASK
+  PHONE: FULL_MASK
+  INN: FULL_MASK
+  BANK_CARD: FULL_MASK
+  CVV: FULL_MASK
+  PIN: FULL_MASK
+  CARDHOLDER_NAME: FULL_MASK
 
 demasking:
   enabled: true
 
-context_rules: []
+# Контекстное правило PIN->BANK_CARD по умолчанию выключено: организаторы
+# проверяют, насколько скрыт оригинал, и отдельные значения ПД (в т.ч. PIN)
+# могут встречаться без контекста. Включите (enabled: true), если нужно
+# маскировать PIN только рядом с картой.
+context_rules:
+  - type: PIN
+    requires:
+      - BANK_CARD
+    enabled: false

@@ -8,7 +8,7 @@ import pytest
 
 from app.core.enums import RestorationStateStatus
 from app.core.exceptions import ServiceOverloadedError
-from app.restoration.memory import _SHARD_COUNT, InMemoryRestorationStore
+from app.restoration.memory import InMemoryRestorationStore
 from app.restoration.models import RestorationState
 
 
@@ -50,42 +50,62 @@ def test_ttl_expiry() -> None:
     assert store.get("abc") is None
 
 
-def test_overflow_raises_service_overloaded() -> None:
-    store = InMemoryRestorationStore(ttl_seconds=3600, max_entries=1)
-    # Find two payload_ids that hash to the same shard.
-    first = "a"
-    store.save(first, _state(first))
-    second = next(
-        (
-            f"id-{i}"
-            for i in range(1000)
-            if hash(f"id-{i}") % _SHARD_COUNT == hash(first) % _SHARD_COUNT
-        ),
-        None,
-    )
-    assert second is not None
-    with pytest.raises(ServiceOverloadedError):
-        store.save(second, _state(second))
+def test_expired_entries_evicted_on_save() -> None:
+    store = InMemoryRestorationStore(ttl_seconds=0)
+    store.save("expired", _state("expired"))
+    assert "expired" in store._data
+    store.save("fresh", _state("fresh"))
+    assert "expired" not in store._data
+    assert "fresh" in store._data
 
 
-def test_full_store_preserves_live_mapping() -> None:
+@pytest.mark.slow
+def test_save_performance_does_not_grow_with_size() -> None:
+    store = InMemoryRestorationStore(max_entries=1_000_000)
+    now = time.monotonic()
+    # Fill directly to avoid 200k Fernet encryptions; entries are not expired.
+    for i in range(200_000):
+        store._data[f"id-{i}"] = (now + 3600, b"x")
+    start = time.perf_counter()
+    for i in range(10_000):
+        store.save(f"new-{i}", _state(f"new-{i}"))
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0
+
+
+def test_original_not_stored_in_plaintext() -> None:
+    store = InMemoryRestorationStore()
+    state = _state("abc")
+    store.save("abc", state)
+    encrypted = store._data["abc"][1]
+    assert b"secret" not in encrypted
+    assert b"****" not in encrypted
+
+
+def test_roundtrip_returns_original() -> None:
+    store = InMemoryRestorationStore()
+    state = _state("abc")
+    store.save("abc", state)
+    restored = store.get("abc")
+    assert restored is not None
+    assert restored.original_text == "secret"
+    assert restored.masked_text == "****"
+    assert restored.state == RestorationStateStatus.MASKED
+
+
+def test_full_store_rejects_new_state_without_losing_live_mapping() -> None:
     """A full store must preserve every live reversible mapping."""
-    store = InMemoryRestorationStore(ttl_seconds=3600, max_entries=1)
-    first = "a"
-    store.save(first, _state(first))
-    second = next(
-        (
-            f"id-{i}"
-            for i in range(1000)
-            if hash(f"id-{i}") % _SHARD_COUNT == hash(first) % _SHARD_COUNT
-        ),
-        None,
-    )
-    assert second is not None
+    store = InMemoryRestorationStore(ttl_seconds=3600, max_entries=3)
+    for i in range(3):
+        store.save(f"k{i}", _state(f"k{i}"))
+    assert len(store._data) == 3
+
     with pytest.raises(ServiceOverloadedError):
-        store.save(second, _state(second))
-    assert store.get(first) is not None
-    assert store.get(second) is None
+        store.save("k3", _state("k3"))
+
+    assert len(store._data) == 3
+    assert store.get("k0") is not None
+    assert store.get("k3") is None
 
 
 def test_state_json_roundtrip() -> None:

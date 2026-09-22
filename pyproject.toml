@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "PyYAML>=6.0",
+    "cryptography>=42.0",
     "prometheus-client>=0.20",
     "redis>=5.0",
 ]
@@ -34,6 +35,7 @@ include = ["app*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q -m 'not concurrency and not slow and not performance'"
 markers = [
     "integration: integration tests that exercise the full HTTP stack",

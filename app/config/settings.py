@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     log_format: str = "json"
 
     restoration_ttl_seconds: int = 3600
-    restoration_max_entries: int = 100_000
+    restoration_max_entries: int = 1_000_000
 
     restoration_store_backend: str = "memory"  # "memory" | "redis"
     redis_url: str = "redis://localhost:6379/0"
