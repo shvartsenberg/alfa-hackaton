@@ -2,10 +2,10 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-*.egg
 .eggs/
 build/
 dist/
+*.egg
 
 # Virtual environments
 .venv/
@@ -19,24 +19,19 @@ ENV/
 .mypy_cache/
 .ruff_cache/
 .coverage
-coverage/
 htmlcov/
+coverage/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
 
 # Environment / secrets
 .env
 .env.*
 !.env.example
-*.key
-*.pem
-
-# Logs
-*.log
-
-# OS / editor
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
 
 # Submission artifacts
 submission.zip
