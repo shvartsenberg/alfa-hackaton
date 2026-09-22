@@ -129,6 +129,13 @@ def test_invalid_spans_are_dropped() -> None:
     assert _mask(text, [bad_negative, bad_past_end, bad_empty]) == "Иванов Иван"
 
 
+def test_mismatched_span_is_dropped() -> None:
+    text = "Иванов Иван"
+    # value does not match text[start:end] -> span is dropped, text unchanged.
+    bad = _entity(PIIType.PERSON_NAME, "Петров", start=0)
+    assert _mask(text, [bad]) == "Иванов Иван"
+
+
 def test_unknown_type_uses_default_partial_mask() -> None:
     text = "Код 123-456"
     entities = [_entity(PIIType.PASSPORT_ISSUER, "123-456", start=4)]

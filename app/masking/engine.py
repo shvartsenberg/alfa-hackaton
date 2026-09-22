@@ -97,11 +97,15 @@ class MaskingEngine:
     def _select_spans(self, text: str, entities: list[PIIEntity]) -> list[PIIEntity]:
         """Drop invalid spans and keep the longest of overlapping ones."""
         length = len(text)
-        valid = [
-            e
-            for e in entities
-            if e.start >= 0 and e.end <= length and e.start < e.end
-        ]
+        valid: list[PIIEntity] = []
+        for e in entities:
+            if e.start < 0 or e.end > length or e.start >= e.end:
+                logger.warning("dropping invalid span type=%s", e.type.value)
+                continue
+            if text[e.start : e.end] != e.value:
+                logger.warning("dropping mismatched span type=%s", e.type.value)
+                continue
+            valid.append(e)
         valid.sort(key=lambda e: (e.start, -(e.end - e.start)))
         selected: list[PIIEntity] = []
         for entity in valid:
