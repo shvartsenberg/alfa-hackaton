@@ -51,13 +51,15 @@ _PERSON_NAME_RE = re.compile(
 )
 _BIRTH_PLACE_RE = re.compile(
     r"(?i:место рождения|родился в|родилась в|уроженец|уроженка|родом из)\s*:?\s*[—–-]?\s*"
-    r"(?:г\.\s*|городе\s+|города\s+|город\s+|село\s+|села\s+|деревня\s+|деревни\s+)?"
+    r"(?:г\.\s*|городе\s+|города\s+|город\s+|село\s+|села\s+|с\.\s*|"
+    r"деревня\s+|деревни\s+|д\.\s*)?"
     r"([А-ЯЁ][а-яё]+(?:-[а-яё]+-[А-ЯЁ][а-яё]+|-[А-ЯЁ][а-яё]+)*"
-    r"(?:\s+[А-ЯЁ][а-яё]+(?:-[а-яё]+-[А-ЯЁ][а-яё]+|-[А-ЯЁ][а-яё]+)*){0,1})"
+    r"(?:\s+[А-ЯЁ][а-яё]+(?:-[а-яё]+-[А-ЯЁ][а-яё]+|-[А-ЯЁ][а-яё]+)*){0,1}"
+    r"(?:\s+[А-ЯЁ][а-яё]+(?:ской|ского|ский|ого|ая|ое)\s+(?:области|область|обл\.|района|район|края|край))?)"
 )
 _CITIZENSHIP_RE = re.compile(
     r"(?i:гражданство|гражданин|гражданка)\s*:?\s*"
-    r"([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2})"
+    r"([А-ЯЁ][А-ЯЁа-яё]*(?:\s+[А-ЯЁ][А-ЯЁа-яё]*){0,2})"
 )
 _PASSPORT_ISSUER_RE = re.compile(
     r"(?i:кем выдан|выдан\b|выдано\b|орган, выдавший)\s*:?\s*"
@@ -176,6 +178,7 @@ _COUNTRY_NAMES = frozenset(
     {
         "российская федерация",
         "российской федерации",
+        "рф",
         "россия",
         "россии",
         "республика беларусь",
@@ -295,11 +298,18 @@ class RegexDetector(PIIDetector):
     def _is_bank_context(text: str, start: int) -> bool:
         """Return True if the text near ``start`` mentions a bank branch.
 
-        A public bank-branch address is not personal data, so address
-        components are suppressed in that context.
+        A public bank-branch phone/address is not personal data, so it is
+        suppressed. But a clearly personal phone (e.g. "его личный телефон")
+        must not be suppressed even if a bank is mentioned nearby.
         """
         window = text[max(0, start - 80) : start + 20].lower()
-        return "банк" in window or "отделение" in window
+        if "банк" not in window and "отделение" not in window:
+            return False
+        # Personal indicators mean the value belongs to the client, not the bank.
+        personal = ("личный", "личного", "личному", "мой", "моя", "моего",
+                    "его", "её", "ее", "клиента", "клиент", "заявителя",
+                    "пациента", "сотрудника")
+        return not any(indicator in window for indicator in personal)
 
     @staticmethod
     def _is_full_address(value: str) -> bool:

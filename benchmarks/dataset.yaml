@@ -678,9 +678,9 @@
   text: Место рождения — село Верхние Печёры Нижегородской области
   expected:
   - type: BIRTH_PLACE
-    text: Верхние Печёры
+    text: Верхние Печёры Нижегородской области
     start: 22
-    end: 36
+    end: 58
 - id: pos_driver_003
   text: 'Водительское удостоверение: 77 АА 123456'
   expected:
@@ -691,3 +691,24 @@
 - id: neg_bank_phone_001
   text: Телефон отделения банка +7 495 123-45-67 для справок
   expected: []
+- id: pos_birthplace_009
+  text: 'Место рождения: с. Большие Вязёмы Московской области.'
+  expected:
+  - type: BIRTH_PLACE
+    text: Большие Вязёмы Московской области
+    start: 19
+    end: 52
+- id: pos_citizenship_007
+  text: Гражданство РФ.
+  expected:
+  - type: CITIZENSHIP
+    text: РФ
+    start: 12
+    end: 14
+- id: pos_phone_personal_001
+  text: Клиент пришёл в отделение банка, его личный телефон +7 999 123-45-67.
+  expected:
+  - type: PHONE
+    text: +7 999 123-45-67
+    start: 52
+    end: 68
