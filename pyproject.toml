@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "PyYAML>=6.0",
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
