@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 
@@ -16,9 +17,11 @@ from app.masking.strategies.impl import (
     TokenizeStrategy,
 )
 
-# Context rules: a PII type is only masked when at least one of the required
-# types is present in the same text. Configurable in one place so new rules
-# can be added without touching the pipeline.
+logger = logging.getLogger("pii_security_proxy.masking.engine")
+
+# Default context rules: a PII type is only masked when at least one of the
+# required types is present in the same text. Used when no rules are supplied
+# by the consumer policy (context_rules is None or empty).
 CONTEXT_REQUIRES: dict[PIIType, frozenset[PIIType]] = {
     PIIType.PIN: frozenset({PIIType.BANK_CARD}),
 }
@@ -65,15 +68,18 @@ class MaskingEngine:
         text: str,
         entities: list[PIIEntity],
         strategy_by_type: dict[PIIType, MaskingStrategyEnum],
+        *,
+        context_rules: list[dict[str, object]] | None = None,
     ) -> MaskingResult:
         started = time.perf_counter()
         valid = self._select_spans(text, entities)
+        rules = self._resolve_context_rules(context_rules)
         present_types = {e.type for e in valid}
         ordered = sorted(valid, key=lambda e: e.start, reverse=True)
         masked = text
         mappings: dict[str, str] = {}
         for entity in ordered:
-            if not self._context_allows(entity.type, present_types):
+            if not self._context_allows(entity.type, present_types, rules):
                 continue
             strategy_enum = strategy_by_type.get(entity.type, MaskingStrategyEnum.PARTIAL_MASK)
             strategy = self._strategy_factory.get_strategy(strategy_enum)
@@ -106,8 +112,67 @@ class MaskingEngine:
             selected.append(entity)
         return selected
 
-    def _context_allows(self, pii_type: PIIType, present_types: set[PIIType]) -> bool:
-        required = CONTEXT_REQUIRES.get(pii_type)
+    @staticmethod
+    def _resolve_context_rules(
+        context_rules: list[dict[str, object]] | None,
+    ) -> dict[PIIType, frozenset[PIIType]]:
+        """Resolve policy context rules into a type -> required-types map.
+
+        An empty or missing rule list falls back to the default
+        ``CONTEXT_REQUIRES``. A rule with ``enabled: false`` explicitly removes
+        the context requirement for that type (it is always masked). Rules with
+        unknown PII types are skipped with a warning instead of failing.
+        """
+        if not context_rules:
+            return dict(CONTEXT_REQUIRES)
+        rules: dict[PIIType, frozenset[PIIType]] = {}
+        for rule in context_rules:
+            raw_type = rule.get("type")
+            if not isinstance(raw_type, str):
+                logger.warning("context rule missing 'type'; skipped")
+                continue
+            try:
+                pii_type = PIIType(raw_type)
+            except ValueError:
+                logger.warning("context rule has unknown PII type %r; skipped", raw_type)
+                continue
+            if rule.get("enabled", True) is False:
+                rules[pii_type] = frozenset()
+                continue
+            raw_required = rule.get("requires")
+            if not isinstance(raw_required, list) or not raw_required:
+                logger.warning(
+                    "context rule for %s has no 'requires' list; skipped", raw_type
+                )
+                continue
+            required: set[PIIType] = set()
+            valid = True
+            for raw_req in raw_required:
+                try:
+                    required.add(PIIType(raw_req))
+                except ValueError:
+                    logger.warning(
+                        "context rule for %s has unknown required type %r; skipped",
+                        raw_type,
+                        raw_req,
+                    )
+                    valid = False
+                    break
+            if valid:
+                rules[pii_type] = frozenset(required)
+        # If every rule was skipped, fall back to the default so a broken
+        # config does not silently disable the PIN protection.
+        if not rules:
+            return dict(CONTEXT_REQUIRES)
+        return rules
+
+    @staticmethod
+    def _context_allows(
+        pii_type: PIIType,
+        present_types: set[PIIType],
+        rules: dict[PIIType, frozenset[PIIType]],
+    ) -> bool:
+        required = rules.get(pii_type)
         if not required:
             return True
         return bool(required & present_types)

@@ -22,4 +22,8 @@ masking:
 demasking:
   enabled: true
 
-context_rules: []
+context_rules:
+  - type: PIN
+    requires:
+      - BANK_CARD
+    enabled: true

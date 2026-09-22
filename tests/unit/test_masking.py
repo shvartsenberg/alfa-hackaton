@@ -101,7 +101,7 @@ def test_text_outside_spans_is_unchanged() -> None:
 
 def test_pin_without_card_is_not_masked() -> None:
     text = "Пин-код 1234"
-    entities = [_entity(PIIType.PIN, "1234", start=9)]
+    entities = [_entity(PIIType.PIN, "1234", start=8)]
     assert _mask(text, entities) == "Пин-код 1234"
 
 
@@ -141,3 +141,40 @@ def test_mappings_recorded() -> None:
     entities = [_entity(PIIType.PERSON_NAME, "Иванов Иван", start=0)]
     result = _engine().mask(text, entities, {})
     assert result.mappings == {"И. И.": "Иванов Иван"}
+
+
+def _mask_with_rules(
+    text: str, entities: list[PIIEntity], rules: list[dict[str, object]] | None
+) -> str:
+    return _engine().mask(text, entities, {}, context_rules=rules).masked_text
+
+
+def test_empty_context_rules_use_default() -> None:
+    text = "Пин-код 1234"
+    entities = [_entity(PIIType.PIN, "1234", start=8)]
+    assert _mask_with_rules(text, entities, []) == "Пин-код 1234"
+
+
+def test_context_rules_from_policy() -> None:
+    text = "Карта 4567 8901 2345 6756, пин 1234"
+    entities = [
+        _entity(PIIType.BANK_CARD, "4567 8901 2345 6756", start=6),
+        _entity(PIIType.PIN, "1234", start=31),
+    ]
+    rules = [{"type": "PIN", "requires": ["BANK_CARD"], "enabled": True}]
+    assert _mask_with_rules(text, entities, rules) == "Карта 45** **** **** **56, пин ****"
+
+
+def test_context_rule_disabled_masks_always() -> None:
+    text = "Пин-код 1234"
+    entities = [_entity(PIIType.PIN, "1234", start=8)]
+    rules = [{"type": "PIN", "requires": ["BANK_CARD"], "enabled": False}]
+    assert _mask_with_rules(text, entities, rules) == "Пин-код ****"
+
+
+def test_context_rule_unknown_type_is_skipped() -> None:
+    text = "Пин-код 1234"
+    entities = [_entity(PIIType.PIN, "1234", start=8)]
+    rules = [{"type": "NOT_A_TYPE", "requires": ["BANK_CARD"], "enabled": True}]
+    # Unknown rule type is skipped; no rules remain -> default applies.
+    assert _mask_with_rules(text, entities, rules) == "Пин-код 1234"
