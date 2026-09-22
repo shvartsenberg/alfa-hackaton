@@ -2,11 +2,29 @@ enabled: true
 
 detection:
   enabled_types:
+    - PERSON_NAME
+    - BIRTH_DATE
+    - BIRTH_PLACE
+    - PASSPORT_NUMBER
+    - CITIZENSHIP
+    - PASSPORT_ISSUER
+    - PASSPORT_DIVISION_CODE
+    - PASSPORT_ISSUE_DATE
+    - DRIVER_LICENSE
+    - ADDRESS
+    - COUNTRY
+    - POSTAL_CODE
+    - CITY
+    - STREET
+    - HOUSE
+    - APARTMENT
     - EMAIL
     - PHONE
-    - PERSON_NAME
-    - PASSPORT_NUMBER
+    - INN
     - BANK_CARD
+    - CVV
+    - PIN
+    - CARDHOLDER_NAME
 
 masking:
   EMAIL: PARTIAL_MASK
