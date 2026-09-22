@@ -29,6 +29,39 @@ from app.detection.regex.detector import RegexDetector  # noqa: E402
 
 _DATASET_PATH = Path(__file__).resolve().parent / "dataset.yaml"
 _F1_THRESHOLD = 0.7
+_MIN_RECALL = 0.5
+_MIN_OVERALL_RECALL = 0.8
+_MIN_OVERALL_F1 = 0.8
+
+# Types that must have non-zero recall (a zero-recall required type is a
+# hard failure).
+_REQUIRED_TYPES = frozenset(
+    {
+        "PERSON_NAME",
+        "BIRTH_DATE",
+        "BIRTH_PLACE",
+        "PASSPORT_NUMBER",
+        "CITIZENSHIP",
+        "PASSPORT_ISSUER",
+        "PASSPORT_DIVISION_CODE",
+        "PASSPORT_ISSUE_DATE",
+        "DRIVER_LICENSE",
+        "ADDRESS",
+        "COUNTRY",
+        "POSTAL_CODE",
+        "CITY",
+        "STREET",
+        "HOUSE",
+        "APARTMENT",
+        "EMAIL",
+        "PHONE",
+        "INN",
+        "BANK_CARD",
+        "CVV",
+        "PIN",
+        "CARDHOLDER_NAME",
+    }
+)
 
 
 def _load_dataset() -> list[dict[str, object]]:
@@ -133,7 +166,31 @@ def _main() -> int:
         for case_id, pii_type, value in false_positives:
             print(f"  {case_id}: {pii_type} = {value}")
 
-    return 1 if f1 < _F1_THRESHOLD else 0
+    violations: list[str] = []
+    for pii_type in sorted(_REQUIRED_TYPES):
+        t = tp.get(pii_type, 0)
+        n = fn.get(pii_type, 0)
+        recall = t / (t + n) if t + n else 0.0
+        if t + n == 0:
+            continue  # no examples in the dataset for this type
+        if recall == 0.0:
+            violations.append(f"{pii_type}: recall is zero")
+        elif recall < _MIN_RECALL:
+            violations.append(
+                f"{pii_type}: recall {recall:.3f} < {_MIN_RECALL:.3f}"
+            )
+    if recall < _MIN_OVERALL_RECALL:
+        violations.append(f"overall recall {recall:.3f} < {_MIN_OVERALL_RECALL:.3f}")
+    if f1 < _MIN_OVERALL_F1:
+        violations.append(f"overall F1 {f1:.3f} < {_MIN_OVERALL_F1:.3f}")
+
+    if violations:
+        print("\nQuality gate FAILED:")
+        for violation in violations:
+            print(f"  - {violation}")
+        return 1
+    print("\nQuality gate passed.")
+    return 0
 
 
 if __name__ == "__main__":
