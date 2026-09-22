@@ -663,3 +663,31 @@
 - id: neg_bank_branch_001
   text: 'Отделение банка по адресу: г. Москва, ул. Тверская, д. 1.'
   expected: []
+- id: pos_address_005
+  text: 'Клиент Иванов живет: Москва, Тверская 10'
+  expected:
+  - type: PERSON_NAME
+    text: Иванов
+    start: 7
+    end: 13
+  - type: ADDRESS
+    text: Москва, Тверская 10
+    start: 21
+    end: 40
+- id: pos_birthplace_008
+  text: Место рождения — село Верхние Печёры Нижегородской области
+  expected:
+  - type: BIRTH_PLACE
+    text: Верхние Печёры
+    start: 22
+    end: 36
+- id: pos_driver_003
+  text: 'Водительское удостоверение: 77 АА 123456'
+  expected:
+  - type: DRIVER_LICENSE
+    text: 77 АА 123456
+    start: 28
+    end: 40
+- id: neg_bank_phone_001
+  text: Телефон отделения банка +7 495 123-45-67 для справок
+  expected: []

@@ -170,14 +170,14 @@ def _main() -> int:
     for pii_type in sorted(_REQUIRED_TYPES):
         t = tp.get(pii_type, 0)
         n = fn.get(pii_type, 0)
-        recall = t / (t + n) if t + n else 0.0
+        type_recall = t / (t + n) if t + n else 0.0
         if t + n == 0:
             continue  # no examples in the dataset for this type
-        if recall == 0.0:
+        if type_recall == 0.0:
             violations.append(f"{pii_type}: recall is zero")
-        elif recall < _MIN_RECALL:
+        elif type_recall < _MIN_RECALL:
             violations.append(
-                f"{pii_type}: recall {recall:.3f} < {_MIN_RECALL:.3f}"
+                f"{pii_type}: recall {type_recall:.3f} < {_MIN_RECALL:.3f}"
             )
     if recall < _MIN_OVERALL_RECALL:
         violations.append(f"overall recall {recall:.3f} < {_MIN_OVERALL_RECALL:.3f}")
