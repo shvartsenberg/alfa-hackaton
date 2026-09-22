@@ -64,11 +64,63 @@ curl -X POST http://localhost:8000/process \
 pytest
 ```
 
+Concurrency/slow/performance тесты исключены из обычного прогона:
+
+```bash
+pytest -m concurrency   # concurrency-тесты
+pytest -m slow          # медленные pytest-сценарии
+```
+
 ## 9. Запуск performance tests
+
+Интерактивный режим:
 
 ```bash
 locust -f tests/performance/locustfile.py --host http://localhost:8000
 ```
+
+Headless-прогон с управлением целевым HTTP RPS. Runner проверяет healthcheck,
+сохраняет CSV/JSON/Markdown и завершает работу с ошибкой, если фактический RPS,
+p95/p99 или error rate не проходят заданные пороги:
+
+```bash
+python scripts/run_performance.py --host http://localhost:8000 \
+  --targets 100,500,1000,2000 --scenario mixed
+```
+
+Доступные сценарии: `mask_only`, `roundtrip`, `mask_retry`, `demask_retry`,
+`duplicate_payload`, `large_payload`, `mixed`. Результаты сохраняются в
+`artifacts/performance/`. Числа 100/500/1000/2000 являются целевым RPS;
+отчёт отдельно показывает фактически достигнутое значение.
+
+## 9.1. Метрики
+
+Технический endpoint `GET /metrics` отдаёт метрики в формате Prometheus
+(`text/plain; version=0.0.4`). Он не меняет контракт `POST /process`.
+
+```bash
+curl http://localhost:8000/metrics
+```
+
+Метрики используют стандартные монотонные Prometheus Counter/Histogram,
+раздельные buckets для latency в секундах и размера payload в байтах. В labels
+не используются `payload`, `payload_id` или `request_id`.
+
+## 9.2. CI
+
+GitHub Actions workflow в `.github/workflows/ci.yml` запускает ruff, mypy,
+pytest и валидацию submission ZIP на каждый push/PR.
+
+## 9.3. Submission ZIP
+
+```bash
+python scripts/package_submission.py submission.zip
+python scripts/package_submission.py --validate submission.zip
+```
+
+Сборщик создаёт детерминированный архив и исключает `.env*` (кроме
+`.env.example`), VCS, виртуальные окружения, caches, performance artifacts и
+предыдущие ZIP-файлы.
 
 ## 10. Как добавить новый PIIType
 

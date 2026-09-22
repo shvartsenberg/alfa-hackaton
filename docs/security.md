@@ -43,6 +43,25 @@ metrics:
 
 - No payload content is placed in metric labels.
 - Only counts, timings, and PII types are recorded.
+- Histograms use cumulative Prometheus bucket counters and do not retain raw
+  observations in process memory.
+- Exposed via `GET /metrics` in the Prometheus text format.
+- HTTP labels are limited to method, normalized route and status code.
+- `payload_id`, its hash and `request_id` are never used as metric labels.
+
+## Logging
+
+- Logs are structured JSON by default (`LOG_FORMAT=json`).
+- Each HTTP response contains a validated/generated `X-Request-ID` header.
+- The JSON formatter never includes exception text or tracebacks, which may
+  contain PII; only the exception type is recorded.
+- Unexpected-error handlers log only the exception type, never the message.
+
+## Error responses
+
+- Stack traces are never returned to the client.
+- Unexpected exceptions return a generic `INTERNAL_ERROR` body; exception
+  text, PII, and tracebacks are never leaked to the response.
 
 ## Storage
 
@@ -54,6 +73,8 @@ metrics:
 ### Implemented today
 
 - `InMemoryRestorationStore` (single process, not horizontally scalable).
+- A full store preserves live mappings and rejects new state with HTTP 429;
+  it never evicts a reversible mapping before its TTL expires.
 - No encryption at rest.
 
 ## Threat model (initial implementation)

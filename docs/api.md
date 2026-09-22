@@ -49,6 +49,27 @@ curl -X POST http://localhost:8000/process \
 }
 ```
 
+## GET /metrics
+
+Технический endpoint, отдающий метрики в формате Prometheus
+(`text/plain; version=0.0.4`). Не меняет контракт `POST /process`.
+
+```bash
+curl http://localhost:8000/metrics
+```
+
+Пример вывода:
+
+```
+# TYPE pii_proxy_http_requests_total counter
+pii_proxy_http_requests_total{method="POST",path="/process",status="200"} 42
+# TYPE pii_proxy_http_request_duration_seconds histogram
+pii_proxy_http_request_duration_seconds_count{method="POST",path="/process"} 42
+pii_proxy_http_request_duration_seconds_sum{method="POST",path="/process"} 1.234
+pii_proxy_http_request_duration_seconds_bucket{le="0.005",method="POST",path="/process"} 5
+...
+```
+
 ## Error responses
 
 | Status | Meaning |

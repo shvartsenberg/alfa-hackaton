@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "PyYAML>=6.0",
+    "prometheus-client>=0.20",
 ]
 
 [project.optional-dependencies]
@@ -31,7 +32,13 @@ include = ["app*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not concurrency and not slow and not performance'"
+markers = [
+    "integration: integration tests that exercise the full HTTP stack",
+    "concurrency: tests that exercise concurrent access to shared state",
+    "performance: heavy load/performance tests (opt-in)",
+    "slow: slow tests that are excluded from the default run",
+]
 
 [tool.ruff]
 line-length = 100
