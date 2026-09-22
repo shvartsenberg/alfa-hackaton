@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     restoration_ttl_seconds: int = 3600
     restoration_max_entries: int = 100_000
 
+    # Fernet key for encrypting restoration state at rest. If unset, a random
+    # key is generated at startup (state is not recoverable across restarts).
+    masking_key: str | None = None
+
     consumers_dir: Path = PROJECT_ROOT / "configs" / "consumers"
     default_consumer_id: str = "default"
 

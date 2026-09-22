@@ -45,3 +45,23 @@ def test_ttl_expiry() -> None:
     assert store.get("abc") is not None
     time.sleep(1.1)
     assert store.get("abc") is None
+
+
+def test_original_not_stored_in_plaintext() -> None:
+    store = InMemoryRestorationStore()
+    state = _state("abc")
+    store.save("abc", state)
+    encrypted = store._data["abc"][1]
+    assert b"secret" not in encrypted
+    assert b"****" not in encrypted
+
+
+def test_roundtrip_returns_original() -> None:
+    store = InMemoryRestorationStore()
+    state = _state("abc")
+    store.save("abc", state)
+    restored = store.get("abc")
+    assert restored is not None
+    assert restored.original_text == "secret"
+    assert restored.masked_text == "****"
+    assert restored.state == RestorationStateStatus.MASKED
