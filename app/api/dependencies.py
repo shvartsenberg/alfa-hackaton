@@ -37,7 +37,6 @@ def get_restoration_store() -> RestorationStore:
     return InMemoryRestorationStore(
         ttl_seconds=settings.restoration_ttl_seconds,
         max_entries=settings.restoration_max_entries,
-        masking_key=settings.masking_key,
     )
 
 
