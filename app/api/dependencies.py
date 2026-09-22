@@ -9,6 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.config.settings import get_settings
+from app.core.ratelimit import SlidingWindowRateLimiter
 from app.detection.context.resolver import ContextResolver
 from app.detection.engine import DetectionEngine
 from app.detection.regex.detector import RegexDetector
@@ -71,3 +72,12 @@ def get_process_service() -> ProcessService:
 
 def get_default_consumer_id() -> str:
     return get_settings().default_consumer_id
+
+
+@lru_cache
+def get_rate_limiter() -> SlidingWindowRateLimiter:
+    settings = get_settings()
+    return SlidingWindowRateLimiter(
+        max_requests=settings.rate_limit_max_requests,
+        window_seconds=settings.rate_limit_window_seconds,
+    )

@@ -28,6 +28,13 @@ class InvalidPayloadError(PIIProxyError):
     error_type = "INVALID_PAYLOAD"
 
 
+class BadRequestError(PIIProxyError):
+    """Raised when the request itself is malformed."""
+
+    status_code = 400
+    error_type = "BAD_REQUEST"
+
+
 class RestorationStateNotFoundError(PIIProxyError):
     """Raised when no restoration state exists for a payload_id."""
 
@@ -51,3 +58,10 @@ class ServiceOverloadedError(PIIProxyError):
     def __init__(self, message: str, retry_after: int = 1) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+
+
+class ServiceUnavailableError(PIIProxyError):
+    """Raised when the service is temporarily unavailable."""
+
+    status_code = 503
+    error_type = "SERVICE_UNAVAILABLE"

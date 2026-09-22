@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from app.core.enums import RestorationStateStatus
+from app.core.exceptions import ServiceOverloadedError
 from app.restoration.memory import InMemoryRestorationStore
 from app.restoration.models import RestorationState
 
@@ -45,3 +48,10 @@ def test_ttl_expiry() -> None:
     assert store.get("abc") is not None
     time.sleep(1.1)
     assert store.get("abc") is None
+
+
+def test_overflow_raises_service_overloaded() -> None:
+    store = InMemoryRestorationStore(ttl_seconds=3600, max_entries=1)
+    store.save("a", _state("a"))
+    with pytest.raises(ServiceOverloadedError):
+        store.save("b", _state("b"))

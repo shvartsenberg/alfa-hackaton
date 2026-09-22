@@ -21,6 +21,7 @@ class RestorationState:
     original_text: str
     masked_text: str
     mappings: dict[str, str] = field(default_factory=dict)
+    entity_count: int = 0
     state: RestorationStateStatus = RestorationStateStatus.MASKED
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     expires_at: datetime | None = None

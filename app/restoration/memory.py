@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 import time
 
+from app.core.exceptions import ServiceOverloadedError
 from app.restoration.base import RestorationStore
 from app.restoration.models import RestorationState
 
@@ -37,6 +38,10 @@ class InMemoryRestorationStore(RestorationStore):
         with self._lock:
             if payload_id not in self._data and len(self._data) >= self._max_entries:
                 self._evict_expired_locked()
+                if len(self._data) >= self._max_entries:
+                    raise ServiceOverloadedError(
+                        "restoration store is full", retry_after=1
+                    )
             expires_at = time.monotonic() + self._ttl_seconds
             self._data[payload_id] = (expires_at, state)
 

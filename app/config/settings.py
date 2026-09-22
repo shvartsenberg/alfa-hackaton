@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    rate_limit_max_requests: int = 1000
+    rate_limit_window_seconds: float = 1.0
+
 
 def get_settings() -> Settings:
     """Return a cached settings instance."""
