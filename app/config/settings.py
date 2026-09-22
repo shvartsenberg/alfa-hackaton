@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    detection_llm_enabled: bool = False
+    llm_api_key: str = ""
+    llm_base_url: str = ""
     rate_limit_max_requests: int = 1000
     rate_limit_window_seconds: float = 1.0
 
