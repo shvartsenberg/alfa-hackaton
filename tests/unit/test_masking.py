@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.core.enums import PIIType
 from app.core.models import PIIEntity
 from app.masking.engine import DefaultMaskingStrategyFactory, MaskingEngine
@@ -204,6 +206,7 @@ def test_context_rule_unknown_type_is_skipped() -> None:
     assert _mask_with_rules(text, entities, rules) == "Пин-код ****"
 
 
+@pytest.mark.slow
 def test_mask_large_text_is_fast() -> None:
     import time
 

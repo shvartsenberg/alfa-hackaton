@@ -59,6 +59,7 @@ def test_expired_entries_evicted_on_save() -> None:
     assert "fresh" in store._data
 
 
+@pytest.mark.slow
 def test_save_performance_does_not_grow_with_size() -> None:
     store = InMemoryRestorationStore(max_entries=1_000_000)
     now = time.monotonic()
