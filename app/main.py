@@ -21,8 +21,8 @@ app = FastAPI(
     description="Personal data masking module between consumer and LLM",
 )
 
-app.add_middleware(RequestContextMiddleware)
 app.add_middleware(RateLimitMiddleware, limiter=get_rate_limiter())
+app.add_middleware(RequestContextMiddleware)
 
 register_error_handlers(app)
 app.include_router(health_router)

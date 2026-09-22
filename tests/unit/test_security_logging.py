@@ -18,9 +18,11 @@ def test_hash_identifier_differs_for_different_inputs() -> None:
     assert hash_identifier("a") != hash_identifier("b")
 
 
-def test_hash_payload_is_full_sha256() -> None:
+def test_hash_payload_is_stable_and_fixed_length() -> None:
     digest = hash_payload("secret text")
-    assert len(digest) == 64
+    assert len(digest) == 32
+    assert hash_payload("secret text") == digest
+    assert hash_payload("other text") != digest
 
 
 def test_logger_does_not_emit_payload(caplog) -> None:

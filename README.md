@@ -67,8 +67,35 @@ pytest
 ## 9. Запуск performance tests
 
 ```bash
-locust -f tests/performance/locustfile.py --host http://localhost:8000
+locust -f tests/performance/locustfile.py --host http://localhost:8000 \
+  --users 200 --spawn-rate 20 --run-time 5m
 ```
+
+Профиль: 200 соединений, каждое ждёт ответ перед следующим запросом.
+`--spawn-rate 20` даёт плавный разгон. p50/p95/p99 и error rate — в отчёте
+Locust. Для 100/500/1000/2000 RPS меняйте `--users`/`--spawn-rate`.
+
+## 9a. Мульти-воркер (общий store)
+
+Для нескольких воркеров нужен общий Redis store:
+
+```bash
+RESTORATION_STORE_BACKEND=redis REDIS_URL=redis://localhost:6379/0 \
+  uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+`docker compose up --build` уже поднимает Redis и включает redis-бэкенд.
+
+## 9b. Бенчмарк latency
+
+```bash
+python scripts/benchmark.py --url http://localhost:8000 --users 200 --duration 30
+```
+
+Измеряет p50/p95/p99 и достигнутый RPS. Внимание: клиент бенчмарка работает
+в одном процессе (GIL), поэтому при большом числе пользователей latency
+завышается из-за клиентской стороны. Для честной оценки серверной latency
+используйте последовательный прогон или распределённый клиент (Locust).
 
 ## 10. Как добавить новый PIIType
 

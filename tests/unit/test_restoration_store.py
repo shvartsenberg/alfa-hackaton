@@ -8,7 +8,7 @@ import pytest
 
 from app.core.enums import RestorationStateStatus
 from app.core.exceptions import ServiceOverloadedError
-from app.restoration.memory import InMemoryRestorationStore
+from app.restoration.memory import _SHARD_COUNT, InMemoryRestorationStore
 from app.restoration.models import RestorationState
 
 
@@ -52,6 +52,29 @@ def test_ttl_expiry() -> None:
 
 def test_overflow_raises_service_overloaded() -> None:
     store = InMemoryRestorationStore(ttl_seconds=3600, max_entries=1)
-    store.save("a", _state("a"))
+    # Find two payload_ids that hash to the same shard.
+    first = "a"
+    store.save(first, _state(first))
+    second = next(
+        (
+            f"id-{i}"
+            for i in range(1000)
+            if hash(f"id-{i}") % _SHARD_COUNT == hash(first) % _SHARD_COUNT
+        ),
+        None,
+    )
+    assert second is not None
     with pytest.raises(ServiceOverloadedError):
-        store.save("b", _state("b"))
+        store.save(second, _state(second))
+
+
+def test_state_json_roundtrip() -> None:
+    state = _state("abc")
+    state.mappings = {"****": "secret"}
+    state.entity_count = 1
+    restored = RestorationState.from_json("abc", state.to_json())
+    assert restored.payload_id == "abc"
+    assert restored.original_text == "secret"
+    assert restored.mappings == {"****": "secret"}
+    assert restored.entity_count == 1
+    assert restored.state == RestorationStateStatus.MASKED

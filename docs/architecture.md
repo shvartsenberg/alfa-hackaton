@@ -66,4 +66,14 @@ not from a primitive "payload_id exists" check. This makes retries safe:
 - New masking strategies implementing `MaskingStrategy`.
 - New consumer policies as YAML files in `configs/consumers`.
 - `ChunkingStrategy` for large texts (up to 100k tokens).
-- `RedisRestorationStore` to replace the in-memory store.
+- `RedisRestorationStore` to replace the in-memory store (required for
+  multiple workers; select via `RESTORATION_STORE_BACKEND=redis`).
+
+## Scaling
+
+- Single worker: `InMemoryRestorationStore` (default).
+- Multiple workers: set `RESTORATION_STORE_BACKEND=redis` and point
+  `REDIS_URL` at a shared Redis. State is shared across workers so a mask in
+  one worker can be demasked by another.
+- Rate limiting is global (not per-IP) so load tests from one host are not
+  falsely limited; 429 is a legitimate overload signal.

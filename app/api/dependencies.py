@@ -20,6 +20,7 @@ from app.policies.provider import PolicyProvider
 from app.processing.process_service import ProcessService
 from app.restoration.base import RestorationStore
 from app.restoration.memory import InMemoryRestorationStore
+from app.restoration.redis_store import RedisRestorationStore
 
 
 @lru_cache
@@ -35,6 +36,14 @@ def get_metrics_recorder() -> MetricsRecorder:
 @lru_cache
 def get_restoration_store() -> RestorationStore:
     settings = get_settings()
+    if settings.restoration_store_backend == "redis":
+        import redis
+
+        client = redis.Redis.from_url(settings.redis_url, decode_responses=False)
+        return RedisRestorationStore(
+            client=client,
+            ttl_seconds=settings.restoration_ttl_seconds,
+        )
     return InMemoryRestorationStore(
         ttl_seconds=settings.restoration_ttl_seconds,
         max_entries=settings.restoration_max_entries,

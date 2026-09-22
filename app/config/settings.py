@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     restoration_ttl_seconds: int = 3600
     restoration_max_entries: int = 100_000
 
+    restoration_store_backend: str = "memory"  # "memory" | "redis"
+    redis_url: str = "redis://localhost:6379/0"
+
     consumers_dir: Path = PROJECT_ROOT / "configs" / "consumers"
     default_consumer_id: str = "default"
 

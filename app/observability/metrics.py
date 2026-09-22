@@ -3,6 +3,8 @@
 A lightweight abstraction so the hot path can record counters and timings
 without depending on a full Prometheus client. Swap in a real metrics backend
 later without changing business code. Never put payload content in labels.
+
+Uses sharded buffers to reduce lock contention under high concurrency.
 """
 
 from __future__ import annotations
@@ -12,29 +14,48 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+_SHARD_COUNT = 16
+
 
 @dataclass(slots=True)
-class Metrics:
-    """In-memory metrics registry."""
-
+class _Shard:
     counters: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     histograms: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+class Metrics:
+    """Sharded in-memory metrics registry."""
+
+    def __init__(self) -> None:
+        self._shards = [_Shard() for _ in range(_SHARD_COUNT)]
+
+    def _shard_for(self, name: str) -> _Shard:
+        return self._shards[hash(name) % _SHARD_COUNT]
 
     def inc(self, name: str, value: int = 1) -> None:
-        with self._lock:
-            self.counters[name] += value
+        shard = self._shard_for(name)
+        with shard.lock:
+            shard.counters[name] += value
 
     def observe(self, name: str, value: float) -> None:
-        with self._lock:
-            self.histograms[name].append(value)
+        shard = self._shard_for(name)
+        with shard.lock:
+            shard.histograms[name].append(value)
 
     def snapshot(self) -> dict[str, object]:
-        with self._lock:
-            return {
-                "counters": dict(self.counters),
-                "histograms": {k: list(v) for k, v in self.histograms.items()},
-            }
+        counters: dict[str, int] = defaultdict(int)
+        histograms: dict[str, list[float]] = defaultdict(list)
+        for shard in self._shards:
+            with shard.lock:
+                for name, value in shard.counters.items():
+                    counters[name] += value
+                for name, values in shard.histograms.items():
+                    histograms[name].extend(values)
+        return {
+            "counters": dict(counters),
+            "histograms": {k: list(v) for k, v in histograms.items()},
+        }
 
 
 class MetricsRecorder:
@@ -62,6 +83,8 @@ class MetricsRecorder:
 
 class Timer:
     """Context manager measuring elapsed time in milliseconds."""
+
+    __slots__ = ("_started", "elapsed_ms")
 
     def __init__(self) -> None:
         self._started = time.perf_counter()
