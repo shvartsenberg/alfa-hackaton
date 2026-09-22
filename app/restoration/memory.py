@@ -109,8 +109,11 @@ class InMemoryRestorationStore(RestorationStore):
 
     def save(self, payload_id: str, state: RestorationState) -> None:
         with self._lock:
+            self._evict_expired_locked()
             if payload_id not in self._data and len(self._data) >= self._max_entries:
-                self._evict_expired_locked()
+                # Still full after eviction: drop the oldest entry to bound memory.
+                oldest = min(self._data, key=lambda k: self._data[k][0])
+                del self._data[oldest]
             expires_at = time.monotonic() + self._ttl_seconds
             encrypted = self._fernet.encrypt(_to_json(state).encode("utf-8"))
             self._data[payload_id] = (expires_at, encrypted)

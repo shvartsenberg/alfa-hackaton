@@ -47,6 +47,15 @@ def test_ttl_expiry() -> None:
     assert store.get("abc") is None
 
 
+def test_expired_entries_evicted_on_save() -> None:
+    store = InMemoryRestorationStore(ttl_seconds=0)
+    store.save("expired", _state("expired"))
+    assert "expired" in store._data
+    store.save("fresh", _state("fresh"))
+    assert "expired" not in store._data
+    assert "fresh" in store._data
+
+
 def test_original_not_stored_in_plaintext() -> None:
     store = InMemoryRestorationStore()
     state = _state("abc")
