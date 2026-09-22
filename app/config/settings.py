@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     restoration_ttl_seconds: int = 3600
-    restoration_max_entries: int = 100_000
+    restoration_max_entries: int = 1_000_000
 
     consumers_dir: Path = PROJECT_ROOT / "configs" / "consumers"
     default_consumer_id: str = "default"

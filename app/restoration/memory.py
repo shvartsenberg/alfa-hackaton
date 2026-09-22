@@ -7,6 +7,11 @@ Values are stored encrypted with Fernet so that original text and mappings
 never appear in plaintext in memory. The key comes from the ``MASKING_KEY``
 environment variable; if it is unset a random key is generated at startup
 (which means state is not recoverable across restarts).
+
+Entries are kept in an ``OrderedDict`` in insertion order. Because every entry
+shares the same TTL, insertion order matches expiry order, so expired entries
+are evicted from the front with ``popitem(last=False)`` in amortized O(1)
+instead of scanning the whole store on every write.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ import logging
 import os
 import threading
 import time
+from collections import OrderedDict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -74,12 +80,12 @@ class InMemoryRestorationStore(RestorationStore):
     def __init__(
         self,
         ttl_seconds: int = 3600,
-        max_entries: int = 100_000,
+        max_entries: int = 1_000_000,
         masking_key: str | None = None,
     ) -> None:
         self._ttl_seconds = ttl_seconds
         self._max_entries = max_entries
-        self._data: dict[str, tuple[float, bytes]] = {}
+        self._data: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
         self._lock = threading.Lock()
         self._fernet = self._build_fernet(masking_key)
 
@@ -112,8 +118,10 @@ class InMemoryRestorationStore(RestorationStore):
             self._evict_expired_locked()
             if payload_id not in self._data and len(self._data) >= self._max_entries:
                 # Still full after eviction: drop the oldest entry to bound memory.
-                oldest = min(self._data, key=lambda k: self._data[k][0])
-                del self._data[oldest]
+                self._data.popitem(last=False)
+            if payload_id in self._data:
+                # Refresh: treat the entry as freshly inserted for eviction order.
+                self._data.move_to_end(payload_id)
             expires_at = time.monotonic() + self._ttl_seconds
             encrypted = self._fernet.encrypt(_to_json(state).encode("utf-8"))
             self._data[payload_id] = (expires_at, encrypted)
@@ -124,6 +132,8 @@ class InMemoryRestorationStore(RestorationStore):
 
     def _evict_expired_locked(self) -> None:
         now = time.monotonic()
-        expired = [k for k, (exp, _) in self._data.items() if now >= exp]
-        for key in expired:
-            del self._data[key]
+        while self._data:
+            first_key, (first_exp, _) = next(iter(self._data.items()))
+            if now < first_exp:
+                break
+            del self._data[first_key]

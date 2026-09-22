@@ -56,6 +56,19 @@ def test_expired_entries_evicted_on_save() -> None:
     assert "fresh" in store._data
 
 
+def test_save_performance_does_not_grow_with_size() -> None:
+    store = InMemoryRestorationStore(max_entries=200_000)
+    now = time.monotonic()
+    # Fill directly to avoid 200k Fernet encryptions; entries are not expired.
+    for i in range(200_000):
+        store._data[f"id-{i}"] = (now + 3600, b"x")
+    start = time.perf_counter()
+    for i in range(10_000):
+        store.save(f"new-{i}", _state(f"new-{i}"))
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0
+
+
 def test_original_not_stored_in_plaintext() -> None:
     store = InMemoryRestorationStore()
     state = _state("abc")
