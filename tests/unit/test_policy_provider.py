@@ -13,7 +13,7 @@ def test_loads_default_policy(policy_provider: FilePolicyProvider) -> None:
     policy = policy_provider.get_policy("default")
     assert policy.enabled is True
     assert PIIType.EMAIL in policy.enabled_types
-    assert policy.strategy_for(PIIType.EMAIL) == MaskingStrategy.FULL_MASK
+    assert policy.strategy_for(PIIType.EMAIL) == MaskingStrategy.PARTIAL_MASK
     assert policy.strategy_for(PIIType.PHONE) == MaskingStrategy.PARTIAL_MASK
 
 
