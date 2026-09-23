@@ -179,16 +179,15 @@ defense-in-depth cap `min(..., 200)` даже если `ORGANIZER_MAX_USERS` з�
 (фазы, `target_average_rps`, `actual_average_rps`, `target_vs_actual_delta`).
 Строгая сверка счётчиков сохраняется.
 
-> **Полные 480-секундные прогоны выполнены** (см. раздел 9.7 и
-> `docs/qa-report.md`): несколько полных `--profile organizer` прогонов против
-> локального приложения (memory single-worker и Redis multiworker). Все они
-> **FAIL** по RPS-гейту (фактический средний ~284–308 RPS против target 330.94)
-> и не достигают пика 1000 RPS (наблюдалось ~543–852 RPS). Профиль реализован
-> и покрыт unit-тестами чистой функции `target_rps_at(t)`, cap пользователей и
-> CLI-валидации. Короткий исполняемый smoke
-> (`ORGANIZER_DURATION=5`, `ORGANIZER_MAX_USERS=5`, `ORGANIZER_RPS_PER_USER=1`)
-> подтверждает работу shape + динамического `wait_time` + записи custom metrics
-> при остановке, но **не** является результатом capacity/SLA.
+> **Актуальный полный 480-секундный прогон выполнен** (см. раздел 9.7 и
+> `artifacts/performance/server-organizer/`). Профиль достиг среднего
+> **329.56 RPS** при target **330.94 RPS** и фактического пика
+> **1011.5 RPS** при 200 активных Locust-пользователях. Все 158 850 запросов
+> завершились HTTP 2xx без функциональных и transport-ошибок. Формальный итог
+> отчёта — **FAIL**, потому что p95/p99 составили 520/700 мс при порогах
+> 200/500 мс, а sampler не подтвердил требование 200 одновременных TCP-соединений
+> (`observed_peak_connections=0`). Это не отменяет достигнутые RPS и
+> корректность ответов, но не позволяет объявить полный SLA PASS.
 
 ## 9.1. Метрики
 
@@ -302,65 +301,59 @@ python scripts/run_performance.py --host http://localhost:8000 \
   --targets 100,330,500,1000 --scenario mixed --duration 120
 ```
 
-## 9.7. Ранее заявленный Redis-прогон (основной production-профиль)
+## 9.7. Актуальный Redis/Docker-прогон (основной production-профиль)
 
-> **Важно про статус этого прогона.** Это **ранее заявленный/описанный**
-> Redis-прогон с измеренным RPS/latency. Его артефакты сохранены по **старой
-> схеме** и **не содержат** metadata новой схемы (`environment`,
-> `server_configuration`, `docker_metrics`, `stage_timings`), поэтому он **не
-> является доказательством** backend/workers/конфигурации сервера. Новая схема
-> отчётности пока **не проверена полным 480-секундным прогоном** (Docker здесь
-> недоступен). Числа ниже — это заявленные ранее измерения, а не подтверждённые
-> новой схемой.
+23 сентября 2026 года выполнен полный `--profile organizer` длительностью
+480 секунд против Docker-развёртывания с Redis. Основной сценарий —
+`roundtrip`; заявленная конфигурация сервера — Redis, 4 Uvicorn worker и
+отключённый access log. Runner помечает её как
+`operator_declared_unverified`, поскольку не определяет число worker и backend
+автоматически, но во время прогона отдельно собраны метрики контейнеров app и
+Redis.
 
-Основной production-профиль — **Redis** (несколько workers). Memory-бэкенд
-остаётся для диагностики и **не** является основным benchmark.
-
-Ранее заявленный 480-секундный прогон (4 workers, Redis, `roundtrip`):
-
-| Метрика | Значение |
-| --- | --- |
+| Метрика | Результат |
+| --- | ---: |
 | target average RPS | 330.94 |
-| actual average RPS | 307.62 |
-| average latency | 41.5 ms |
-| p50 / p95 / p99 | 17 / 130 / 160 ms |
-| MASK / DEMASK / incomplete | 73867 / 73851 / 16 |
-| 2xx / 429 / 422 / errors | 147718 / 0 / 0 / 0 |
-| configured max users | 200 |
-| observed max users | ~100 (см. ниже) |
-| observed peak RPS | ~852 |
+| actual average RPS | 329.56 |
+| achieved ratio | 0.996 |
+| target / observed peak RPS | 1000 / 1011.5 |
+| длительность, configured / measured | 480 / 482.0 с |
+| запросы | 158 850 |
+| average latency | 69.0 мс |
+| p50 / p95 / p99 | 6 / 520 / 700 мс |
+| MASK / DEMASK / incomplete | 79 425 / 79 425 / 0 |
+| HTTP 2xx / 429 / 422 / other | 158 850 / 0 / 0 / 0 |
+| functional / transport errors | 0 / 0 |
+| configured / observed max users | 200 / 200 |
+| observed peak TCP connections | 0 |
+| peak app CPU / RAM | 290.45% / 248.9 MB |
+| peak Redis CPU / RAM | 47.47% / 214.0 MB |
+| итог runner | **FAIL** |
 
-**Важно про concurrency.** `configured_max_users` — это настроенный предел,
-а не фактически достигнутая concurrency. `observed_max_users` вычисляется из
-истории Locust (`stats_stats_history.csv`) и отражает реально активных
-пользователей. **Активные Locust-пользователи — это НЕ одновременные HTTP
-соединения**: каждый `FastHttpUser` поддерживает пул соединений и может
-выполнять запросы последовательно, поэтому число пользователей не равно числу
-параллельных соединений к серверу. Для гарантии 200 активных пользователей
-используйте `--required-concurrent-users 200`; без него генератор может создать
-меньше пользователей, чем предел.
+**Что подтверждено:** профиль практически точно выдержал средний target,
+фактический пик превысил 1000 RPS, достигнуты 200 активных пользователей,
+счётчики MASK/DEMASK строго парные, все ответы успешны, ошибок и незавершённых
+roundtrip нет.
 
-**Важно про peak RPS.** `observed_peak_rps` — фактический пик из истории.
-Пик 1000 RPS **не подтверждён** фактическими измерениями (наблюдалось ~852
-RPS). Не заявляйте 1000 RPS без реального прогона.
+**Почему формально FAIL:** p95 520 мс превышает порог 200 мс, p99 700 мс —
+порог 500 мс. Кроме того, sampler вернул
+`observed_peak_connections=0` при требовании 200. Это значение не означает,
+что запросов или сетевых соединений не было: 158 850 запросов обработаны, но
+отдельная метрика ESTABLISHED TCP не подтвердила требуемую concurrency.
+Активные Locust-пользователи не равны одновременным TCP-соединениям, поэтому
+в README эти показатели не подменяют друг друга.
 
-**Метрики ресурсов.** Отчёт сохраняет средний и **пиковый** CPU/RAM load
-generator, а также пиковый CPU/RAM контейнеров app/Redis, сэмплируемые **в ходе**
-прогона через `docker stats`. При отсутствии Docker эти значения честно
-показываются как `unavailable`, а не выдумываются. Конфигурация сервера
-(backend, число workers, команда запуска, логирование) в `summary.json` всегда
-помечается как `operator_declared_unverified`: даже если оператор передал её
-через `--server-config`, runner её не проверяет, поэтому источник никогда не
-становится «verified». Runner не выдаёт собственное окружение за конфигурацию
-удалённого сервера.
+Артефакты нового формата: `artifacts/performance/server-organizer/`
+(`summary.json`, `summary.md`, `final_stats.csv`, `custom_metrics.json`,
+`stats_stats_history.csv`). В `summary.json` присутствуют `environment`,
+`server_configuration`, `docker_metrics` и `stage_timings`. Performance-
+артефакты игнорируются git и не включаются в submission ZIP.
 
-Артефакты: `artifacts/performance/final-organizer-redis/` (`summary.json`,
-`summary.md`, `final_stats.csv`, `custom_metrics.json`,
-`stats_stats_history.csv`). Performance-артефакты не попадают в ZIP.
+Отдельный 5-секундный Docker smoke (`artifacts/performance/docker-smoke/`)
+также прошёл: 30/30 HTTP 2xx, 0 ошибок, p95/p99 44/44 мс. Это проверка
+работоспособности harness и контейнеров, а не capacity-результат.
 
-**Не проверено** в этом прогоне: большие payload. Redis store и multiworker
-проверены этим прогоном (см. таблицу выше). Точные команды/окружение для
-повтора:
+Точные команды для локального повтора:
 
 ```bash
 # Redis store (требует MASKING_KEY и запущенный Redis)
