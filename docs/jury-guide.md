@@ -147,15 +147,17 @@ Actual RPS/latency/status/errors come from the report, not the formula;
 `summary.json` includes profile metadata (phases, `target_average_rps`,
 `actual_average_rps`, `target_vs_actual_delta`).
 
-> **Confirmed Redis run (4 workers, roundtrip).** A full 480s organizer run
-> against a 4-worker Redis deployment achieved **307.62 RPS** average (target
-> 330.94), p50 17ms, p95 130ms, p99 160ms, MASK 73867 / DEMASK 73851 /
-> incomplete 16, 0 errors. `configured_max_users` (200) is the configured
-> limit; `observed_max_users` (~100) is the actual concurrency from the history
-> CSV. `observed_peak_rps` (~852) is the actual peak; **1000 RPS is not
-> confirmed**. Use `--required-concurrent-users 200` to force the generator to
-> create 200 users. The main production profile is Redis; memory is diagnostic
-> only.
+> **Previously reported Redis run (4 workers, roundtrip).** A full 480s
+> organizer run against a 4-worker Redis deployment was previously reported to
+> achieve **307.62 RPS** average (target 330.94), p50 17ms, p95 130ms, p99
+> 160ms, MASK 73867 / DEMASK 73851 / incomplete 16, 0 errors. This is a
+> **previously reported** measurement: its artifacts were saved under the old
+> schema and do **not** confirm the backend/worker configuration. `configured_max_users`
+> (200) is the configured limit; `observed_max_users` (~100) is the actual
+> concurrency from the history CSV. `observed_peak_rps` (~852) is the actual
+> peak; **1000 RPS is not confirmed**. Use `--required-concurrent-users 200` to
+> force the generator to create 200 users. The main production profile is Redis;
+> memory is diagnostic only.
 
 ## Submission ZIP
 

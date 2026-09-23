@@ -133,7 +133,11 @@ These are local-dataset results, not a claim about hidden organizer data.
   transport_errors` (valid 429s and expected 422s are not failures); a mismatch
   marks the report FAIL. This gate is covered by
   `test_build_result_flags_failure_count_mismatch`.
-- **Not verified** in the saved run: Redis store, multiworker, large payloads.
+- **Not verified** in the memory single-worker diagnostic runs: Redis store,
+  multiworker, large payloads. The Redis/multiworker production profile is
+  covered separately in the "Previously reported Redis run" section below (a
+  previously reported run, not confirmed by the new schema); large payloads
+  remain unverified in a full run.
 - **Organizer continuous profile** (`--profile organizer`): a separate opt-in
   mode reproducing the organizers' requested load shape as a single continuous
   480s Locust run (ramp 0→330, steady 330, peak 1000, decay 1000→330, steady
@@ -164,9 +168,19 @@ These are local-dataset results, not a claim about hidden organizer data.
   `test_read_authoritative_aggregate_missing_final_raises`,
   `test_write_final_stats_csv_exports_environment_stats`, and
   `test_reset_step_outputs_removes_stale_files`.
-- **Redis auth**: the current `docker-compose.yml` does not enable Redis
-  authentication (`redis-server` runs without `--requirepass`; `REDIS_URL` has
-  no password). A compose config with a real password is a Core-owner change.
+- **Redis auth**: the current `docker-compose.yml` **does** enable Redis
+  authentication: `redis-server` runs with `--requirepass "$REDIS_PASSWORD"` and
+  `REDIS_URL` carries the password (`redis://:${REDIS_PASSWORD}@redis:6379/0`).
+  The password is required and never logged.
+- **Metrics schema**: the runner now records peak (not just average) CPU/RAM of
+  the load generator, samples app/Redis container CPU/RAM **during** the run
+  (not once after) via `docker stats`, and reports `unavailable` honestly when
+  Docker is absent. `collect_environment()` no longer reads the backend from the
+  generator's own environment; server configuration is always reported as
+  `operator_declared_unverified` (even when supplied via `--server-config`, the
+  runner does not verify it). Stage
+  `max_seconds` is now the observed maximum from a dedicated gauge, not the
+  largest histogram bucket bound.
 - **Health**: `GET /health` is liveness (always 200); `GET /health/ready` is
   readiness and may return 503 when dependencies are unavailable.
 
@@ -177,18 +191,28 @@ The following were executed and passed on this machine:
 - `pip install -e ".[dev]"` — OK (missing `cryptography`/`redis`/`fakeredis`
   installed first).
 - `ruff check .` — OK.
-- `mypy app scripts benchmarks` — OK (56 files).
-- `pytest` — **173 passed, 6 deselected** (re-verified after the latest
-  changes).
-- `pytest -m concurrency` — 4 passed.
+- `mypy app scripts benchmarks` — OK (56 files). This is the CI typecheck scope.
+  `mypy --explicit-package-bases app scripts tests` is **not** clean: it reports
+  68 pre-existing errors in 9 test files (returning `Any`, generator return
+  types, etc.), none of which are in the files changed here. The test files are
+  intentionally excluded from the CI typecheck; this is documented, not claimed
+  as passing.
+- `pytest` — **162 passed, 1 skipped, 93 deselected** (default run excludes
+  `concurrency`/`slow`/`performance`).
+- `pytest -m concurrency` — **9 passed**.
+- `pytest -m performance` — **82 passed** (runs
+  `tests/performance/test_performance_qa.py`, now marked with the `performance`
+  marker).
 - `python -m benchmarks.score` — OK after merging `main`: overall F1 0.995,
   `PASSPORT_ISSUER` recall 1.0 (8/8). Remote CI is not yet verified here.
 - `python scripts/package_submission.py artifacts/pytest-qa-final/submission.zip`
-  — OK (**91 files**, re-verified after the latest changes).
+  — OK (**99 files**, re-verified after the latest changes; pytest temp dirs and
+  mangled `*.pytest-temp`/`*pytest-basetemp` directories are excluded).
 - `python scripts/package_submission.py --validate artifacts/pytest-qa-final/submission.zip`
   — OK.
 - `python scripts/package_submission.py --smoke artifacts/pytest-qa-final/submission.zip`
-  — OK (incl. pytest subset: ok).
+  — OK (incl. pytest subset: ok, run with an explicit `--basetemp` under the
+  extract dir).
 - `git diff --check` — OK (local working-tree check; CI diffs against the PR
   base branch or the previous push commit).
 - `docker compose config` — **not run**: Docker is not installed on this
@@ -392,12 +416,20 @@ same machine. No confirmed 1000 RPS result exists. Artifacts are gitignored
 under `artifacts/performance/current-review/`.
 
 
-## Confirmed Redis run (4 workers, roundtrip) � main production profile
+## Previously reported Redis run (4 workers, roundtrip) — main production profile
+
+> **Status caveat.** This is a **previously reported/described** Redis run with
+> measured RPS/latency. Its artifacts were saved under the **old schema** and do
+> **not** contain the new metadata (`environment`, `server_configuration`,
+> `docker_metrics`, `stage_timings`), so it is **not** proof of the backend,
+> worker count, or server configuration. The new reporting schema has **not yet
+> been verified by a full 480s run** (Docker is unavailable here). The numbers
+> below are previously reported measurements, not confirmed by the new schema.
 
 A full 480s `--profile organizer --scenario roundtrip` run against a 4-worker
 Redis deployment (`RESTORATION_STORE_BACKEND=redis`, `--max-users 200`,
-`--rps-per-user 10`, quiet logging) is the **main production benchmark**. The
-memory single-worker runs above are diagnostic only.
+`--rps-per-user 10`, quiet logging) was previously reported as the **main
+production benchmark**. The memory single-worker runs above are diagnostic only.
 
 | Metric | Value |
 | --- | --- |
@@ -414,8 +446,11 @@ memory single-worker runs above are diagnostic only.
 
 **Concurrency honesty.** `configured_max_users` (200) is the configured limit,
 not the achieved concurrency. `observed_max_users` (~100) is derived from
-`stats_stats_history.csv` and reflects actually active users. To force 200
-concurrent users, pass `--required-concurrent-users 200`.
+`stats_stats_history.csv` and reflects actually active users. **Active Locust
+users are not simultaneous HTTP connections**: each `FastHttpUser` keeps a
+connection pool and issues requests sequentially, so the user count is not the
+number of parallel connections to the server. To force 200 active users, pass
+`--required-concurrent-users 200`.
 
 **Peak honesty.** `observed_peak_rps` (~852) is the actual peak from the
 history. **1000 RPS is not confirmed** by any real measurement. Do not claim
@@ -423,3 +458,25 @@ history. **1000 RPS is not confirmed** by any real measurement. Do not claim
 
 Artifacts: `artifacts/performance/final-organizer-redis/`. Performance
 artifacts are gitignored and excluded from the submission ZIP.
+
+## Current status (new schema)
+
+- **No full 480s Redis run under the new schema.** Docker is not installed on
+  this machine, so a real Redis/multiworker organizer run cannot be executed
+  here. The new reporting schema (peak CPU/RAM, during-run Docker sampling,
+  honest `server_configuration`, observed stage `max_seconds`) is **not yet
+  verified by a full production run**. No 1000 RPS result is claimed.
+- **Memory smoke.** A short local memory-store smoke of the new schema is run
+  via `scripts/run_performance.py --profile steps --targets 5 --duration 5`
+  against a local in-memory server; it is explicitly a **memory smoke**, not a
+  capacity/SLA result. It confirmed the new **peak CPU/RAM** fields in the
+  results and the observed users/peak RPS. It did **not** exercise Docker
+  sampling (Docker is absent) or stage `max_seconds` (the `steps` profile does
+  not emit the `profile` dict with `docker_metrics`/`stage_timings`). See the
+  smoke artifacts under `artifacts/performance/` (gitignored).
+- **What is proven by the memory smoke:** the harness, counter reconciliation,
+  and the new peak CPU/RAM fields in the results. **What is covered only by unit
+  tests (not a live run):** the stage `max_seconds` gauge, Docker sampling with
+  container-ID binding, and the `organizer` profile metadata. **What is not
+  proven:** 1000 RPS, 200 concurrent users as HTTP connections, and the
+  Redis/multiworker production profile under the new schema.

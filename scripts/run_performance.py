@@ -32,6 +32,7 @@ import urllib.request
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -95,6 +96,8 @@ class StepResult:
     memory_measured: bool
     cpu_percent: float | None
     memory_mb: float | None
+    peak_cpu_percent: float | None
+    peak_memory_mb: float | None
     locust_exit_code: int
     passed: bool
     violations: list[str] = field(default_factory=list)
@@ -110,51 +113,57 @@ def redact_url(url: str) -> str:
     return f"{scheme}://{rest}"
 
 
-def collect_docker_metrics() -> dict[str, object]:
-    """Best-effort CPU/memory for app and Redis containers via ``docker stats``.
+def redact_host(url: str) -> str:
+    """Redact a host URL for reporting: strip userinfo and any query/fragment.
 
-    Returns ``{"app": {...}, "redis": {...}}`` with ``null`` values and a
-    ``reason`` when Docker is unavailable. Never fails the run.
+    A ``--host`` value may carry credentials in the userinfo or a token in the
+    query string; neither may be persisted. Returns the scheme://host[:port]
+    portion only.
     """
-    result: dict[str, object] = {}
-    try:
-        import json as _json
+    if "://" not in url:
+        return url
+    scheme, _, rest = url.partition("://")
+    if "@" in rest:
+        rest = rest.rsplit("@", 1)[1]
+    # Drop query and fragment.
+    for sep in ("?", "#"):
+        if sep in rest:
+            rest = rest.split(sep, 1)[0]
+    return f"{scheme}://{rest}"
 
-        proc = subprocess.run(
-            ["docker", "stats", "--no-stream", "--format", "{{json .}}"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=15,
-        )
-        if proc.returncode != 0:
-            return {"app": None, "redis": None, "reason": "docker stats unavailable"}
-        for line in proc.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = _json.loads(line)
-            except ValueError:
-                continue
-            name = str(entry.get("Name", "")).lower()
-            cpu = entry.get("CPUPerc", "0%")
-            mem = entry.get("MemUsage", "0 / 0")
-            mem_used = mem.split("/")[0].strip()
-            cpu_val = _parse_cpu(cpu)
-            try:
-                mem_val = _parse_mem(mem_used)
-            except ValueError:
-                mem_val = None
-            if "api" in name or "app" in name:
-                result["app"] = {"cpu_percent": cpu_val, "memory_mb": mem_val}
-            elif "redis" in name:
-                result["redis"] = {"cpu_percent": cpu_val, "memory_mb": mem_val}
-    except Exception:
-        return {"app": None, "redis": None, "reason": "docker unavailable"}
-    result.setdefault("app", None)
-    result.setdefault("redis", None)
-    return result
+
+def run_parameters(argv: list[str] | None = None) -> dict[str, object]:
+    """Extract a strict allowlist of safe run parameters from the command line.
+
+    The raw command line is never persisted because it may contain secrets
+    (e.g. a password in ``--server-config`` or a token in a ``--host`` query).
+    This function parses ``argv`` and returns only a fixed set of known-safe
+    scalar parameters; any unknown flag or value is ignored. ``host`` is
+    redacted via ``redact_host``. The result is safe to persist in a report.
+    """
+    argv = list(sys.argv if argv is None else argv)
+    params: dict[str, object] = {}
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--host" and i + 1 < len(argv):
+            params["host"] = redact_host(argv[i + 1])
+            i += 2
+            continue
+        if arg.startswith("--host="):
+            params["host"] = redact_host(arg.split("=", 1)[1])
+            i += 1
+            continue
+        if arg in ("--profile", "--scenario", "--targets", "--duration",
+                   "--max-users", "--rps-per-user", "--spawn-rate",
+                   "--required-concurrent-users", "--min-peak-ratio",
+                   "--max-error-rate", "--max-p95-ms", "--max-p99-ms",
+                   "--min-achieved-ratio", "--max-incomplete-ratio") and i + 1 < len(argv):
+            params[arg.lstrip("-").replace("-", "_")] = argv[i + 1]
+            i += 2
+            continue
+        i += 1
+    return params
 
 
 def _parse_mem(value: str) -> float:
@@ -181,7 +190,9 @@ def _parse_cpu(value: str) -> float | None:
 def collect_stage_timings(host: str) -> dict[str, object]:
     """Fetch stage-duration histograms from the app's /metrics endpoint.
 
-    Returns per-stage aggregates (count, avg, p50, p95, p99, max) in seconds.
+    Returns per-stage aggregates (count, avg, estimated p50/p95/p99, observed
+    max) in seconds. This endpoint exposes only the responding worker unless
+    Prometheus multiprocess collection is configured.
     Returns an empty dict when the endpoint is unavailable or the metric is
     absent; this never fails the run.
     """
@@ -194,7 +205,14 @@ def collect_stage_timings(host: str) -> dict[str, object]:
     buckets: dict[str, dict[float, int]] = {}
     counts: dict[str, int] = {}
     sums: dict[str, float] = {}
+    maxima: dict[str, float] = {}
     for line in text.splitlines():
+        if line.startswith("pii_proxy_stage_max_seconds{"):
+            stage = _extract_label(line, "stage")
+            if stage is not None:
+                with contextlib.suppress(ValueError, IndexError):
+                    maxima[stage] = float(line.rsplit(" ", 1)[1])
+            continue
         if not line.startswith("pii_proxy_stage_duration_seconds_"):
             continue
         if "_bucket{" in line:
@@ -234,15 +252,10 @@ def collect_stage_timings(host: str) -> dict[str, object]:
             "p50_seconds": p50,
             "p95_seconds": p95,
             "p99_seconds": p99,
-            "max_seconds": _hist_max(stage_buckets),
+            "max_seconds": maxima.get(stage),
+            "scope": "responding_worker_only",
         }
     return result
-
-
-def _hist_max(buckets: dict[float, int]) -> float:
-    """Return the largest finite bucket bound (ignore the +Inf bucket)."""
-    finite = [le for le in buckets if le != float("inf")]
-    return max(finite, default=0.0)
 
 
 def _extract_label(line: str, label: str) -> str | None:
@@ -260,10 +273,9 @@ def _extract_label(line: str, label: str) -> str | None:
 def _hist_percentile(buckets: dict[float, int], count: int, p: float) -> float:
     """Approximate a percentile from histogram bucket counts."""
     target = count * p
-    cumulative = 0
     for le in sorted(buckets):
-        cumulative += buckets[le]
-        if cumulative >= target:
+        # Prometheus histogram buckets are already cumulative.
+        if buckets[le] >= target:
             return le
     return max(buckets, default=0.0)
 
@@ -272,13 +284,18 @@ def collect_environment() -> dict[str, object]:
     """Capture the run environment with secrets redacted.
 
     Never includes Redis passwords, MASKING_KEY, auth headers, or payloads.
+
+    The server configuration (backend, worker count, launch command, logging)
+    is NOT read from the runner's own environment, because that would not prove
+    the remote server's configuration. It is always reported as
+    ``operator_declared_unverified``: even when the operator supplies it via
+    ``--server-config``, the runner does not verify it, so the source never
+    becomes "verified". The runner only records facts it can verify itself:
+    hostname, OS, Python version, git commit/dirty state, and the redacted
+    command line used to launch the run.
     """
     import platform
 
-    from app.config.settings import get_settings
-
-    settings = get_settings()
-    redis_url = redact_url(settings.redis_url)
     commit = ""
     dirty = False
     try:
@@ -309,11 +326,64 @@ def collect_environment() -> dict[str, object]:
         "hostname": platform.node(),
         "os": platform.platform(),
         "python_version": platform.python_version(),
-        "storage_backend": settings.restoration_store_backend,
-        "redis_url_redacted": redis_url,
         "git_commit": commit,
         "git_dirty": dirty,
+        # The raw command line is deliberately NOT persisted: it may contain
+        # secrets (e.g. a password in --server-config or a URL query token) that
+        # cannot be reliably redacted. Only a strict allowlist of structured
+        # parameters is recorded (see run_parameters()).
+        "run_parameters": run_parameters(),
+        # The runner cannot observe the remote server's configuration. It is
+        # always reported as operator-declared/unverified: even when the
+        # operator supplies --server-config, the runner does not verify it, so
+        # the source never becomes "verified". launch_command is never stored
+        # because an arbitrary command may contain secrets.
+        "server_configuration": {
+            "source": "operator_declared_unverified",
+            "backend": None,
+            "workers": None,
+            "logging": None,
+        },
     }
+
+
+def _apply_server_config(environment: dict[str, object], config: str | None) -> dict[str, object]:
+    """Merge an operator-declared server configuration into the environment.
+
+    ``config`` is a ``key=value`` comma-separated string (e.g.
+    ``backend=redis,workers=4,logging=quiet``). Only a strict allowlist of keys
+    is accepted, and each value is validated against allowed values; anything
+    else is ignored. ``launch_command`` is deliberately NOT accepted because an
+    arbitrary command may contain secrets that cannot be reliably redacted.
+    Values are recorded as operator-declared and are NOT verified by the runner.
+    Returns a copy of ``environment`` with ``server_configuration`` updated.
+    """
+    allowed_backends = {"memory", "redis"}
+    allowed_logging = {"quiet", "info", "debug", "warning", "error"}
+    result = dict(environment)
+    server = dict(cast(dict[str, object], result.get("server_configuration", {})))
+    if config:
+        for item in config.split(","):
+            item = item.strip()
+            if not item or "=" not in item:
+                continue
+            key, _, value = item.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if key == "backend" and value in allowed_backends:
+                server["backend"] = value
+            elif key == "workers":
+                try:
+                    workers = int(value)
+                except ValueError:
+                    continue
+                if workers >= 1:
+                    server["workers"] = workers
+            elif key == "logging" and value in allowed_logging:
+                server["logging"] = value
+        server["source"] = "operator_declared_unverified"
+    result["server_configuration"] = server
+    return result
 
 
 def parse_targets(spec: str) -> list[float]:
@@ -370,6 +440,170 @@ def _sample_process(pid: int, stop: threading.Event, samples: list[tuple[float, 
     return bool(samples)
 
 
+def _resolve_compose_container_ids() -> dict[str, str] | None:
+    """Resolve the container IDs of this compose project's ``api``/``redis``.
+
+    Uses ``docker compose ps -q <service>`` so measurements are bound to the
+    containers of this project, not to any container whose name merely contains
+    "api"/"app"/"redis". Returns ``{"app": id, "redis": id}`` or ``None`` when
+    the binding cannot be proven (Docker missing, compose unavailable, or a
+    service has no running container).
+    """
+    ids: dict[str, str] = {}
+    for service, key in (("api", "app"), ("redis", "redis")):
+        try:
+            proc = subprocess.run(
+                ["docker", "compose", "ps", "-q", service],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+        except Exception:
+            return None
+        if proc.returncode != 0:
+            return None
+        container_id = proc.stdout.strip().splitlines()[0].strip() if proc.stdout.strip() else ""
+        if not container_id:
+            return None
+        ids[key] = container_id
+    return ids
+
+
+def _container_id_matches(stats_id: str, expected_id: str) -> bool:
+    """Return True when two container IDs refer to the same container.
+
+    ``docker compose ps -q`` returns the full 64-char ID while ``docker stats``
+    reports a short 12-char ID. Match either direction (short prefix of the
+    other) so the binding is robust regardless of which form each command
+    returns. Both IDs must be at least 12 hexadecimal characters (the shortest
+    unambiguous Docker ID prefix) and match on a prefix; anything shorter or
+    non-hexadecimal is rejected to avoid false positives.
+    """
+    stats_id = stats_id.strip().lower()
+    expected_id = expected_id.strip().lower()
+    if len(stats_id) < 12 or len(expected_id) < 12:
+        return False
+    if not all(c in "0123456789abcdef" for c in stats_id):
+        return False
+    if not all(c in "0123456789abcdef" for c in expected_id):
+        return False
+    return stats_id.startswith(expected_id) or expected_id.startswith(stats_id)
+
+
+def _sample_docker(
+    stop: threading.Event,
+    samples: list[dict[str, object]],
+) -> None:
+    """Sample this project's app/Redis container CPU/RAM until ``stop``.
+
+    Container IDs are resolved once via ``docker compose ps -q`` so the samples
+    are provably bound to this compose project. Each sample is a
+    ``{"app": {...}|None, "redis": {...}|None}`` dict. When Docker/compose is
+    unavailable or the binding cannot be proven, the thread records a single
+    ``{"unavailable": True}`` marker and exits. Never raises.
+    """
+    try:
+        import json as _json
+
+        ids = _resolve_compose_container_ids()
+        if ids is None:
+            samples.append({"unavailable": True})
+            return
+        while not stop.is_set():
+            proc = subprocess.run(
+                ["docker", "stats", "--no-stream", "--format", "{{json .}}"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            if proc.returncode != 0:
+                samples.append({"unavailable": True})
+                return
+            entry: dict[str, object] = {"app": None, "redis": None}
+            for line in proc.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = _json.loads(line)
+                except ValueError:
+                    continue
+                container_id = str(parsed.get("ID", "")).lower()
+                cpu = _parse_cpu(str(parsed.get("CPUPerc", "0%")))
+                try:
+                    mem = _parse_mem(
+                        str(parsed.get("MemUsage", "0 / 0")).split("/")[0].strip()
+                    )
+                except ValueError:
+                    mem = None
+                for key, expected_id in ids.items():
+                    if _container_id_matches(container_id, expected_id):
+                        entry[key] = {"cpu_percent": cpu, "memory_mb": mem}
+            samples.append(entry)
+            stop.wait(5.0)
+    except Exception:
+        samples.append({"unavailable": True})
+
+
+def _docker_peak(samples: list[dict[str, object]]) -> dict[str, object]:
+    """Reduce per-interval Docker samples to per-container sampled peaks.
+
+    Returns ``{"app": {...}|None, "redis": {...}|None, "unavailable": bool}``.
+    ``unavailable`` is True when Docker could not be sampled at all. The peak
+    values are labelled ``sampled_peak_*`` to make clear they are the maximum of
+    the periodic samples, not a continuous measurement.
+    """
+    if not samples:
+        return {"app": None, "redis": None, "unavailable": True}
+    if any(s.get("unavailable") for s in samples):
+        return {"app": None, "redis": None, "unavailable": True}
+    result: dict[str, object] = {"app": None, "redis": None, "unavailable": False}
+    for container in ("app", "redis"):
+        peak_cpu: float | None = None
+        peak_mem: float | None = None
+        for sample in samples:
+            value = sample.get(container)
+            if not isinstance(value, dict):
+                continue
+            cpu = value.get("cpu_percent")
+            mem = value.get("memory_mb")
+            if isinstance(cpu, (int, float)) and (peak_cpu is None or cpu > peak_cpu):
+                peak_cpu = float(cpu)
+            if isinstance(mem, (int, float)) and (peak_mem is None or mem > peak_mem):
+                peak_mem = float(mem)
+        result[container] = (
+            {
+                "sampled_peak_cpu_percent": peak_cpu,
+                "sampled_peak_memory_mb": peak_mem,
+            }
+            if peak_cpu is not None or peak_mem is not None
+            else None
+        )
+    return result
+
+
+def _finalize_docker_samples(
+    docker_sampler: threading.Thread,
+    stop: threading.Event,
+    docker_samples: list[dict[str, object]],
+) -> None:
+    """Stop and join the Docker sampler, guarding against a sampling race.
+
+    The sampler runs ``docker stats`` with a subprocess timeout, so it may still
+    be mid-call when the run ends. ``stop`` is set and the thread is joined with
+    a timeout that covers the subprocess timeout. If the thread is still alive
+    after the join, the samples are marked ``unavailable``/``incomplete`` so the
+    reduction never races with a still-running sampler and never reports partial
+    data as complete.
+    """
+    stop.set()
+    docker_sampler.join(timeout=20.0)
+    if docker_sampler.is_alive():
+        docker_samples.append({"unavailable": True, "incomplete": True})
+
+
 def run_step(
     host: str,
     target_rps: float,
@@ -378,7 +612,7 @@ def run_step(
     duration_seconds: int,
     scenario: str,
     output_dir: Path,
-) -> tuple[int, float, float, bool, bool]:
+) -> tuple[int, float, float, float, float, bool, bool, dict[str, object]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     reset_step_outputs(output_dir)
     csv_prefix = output_dir / "stats"
@@ -424,20 +658,38 @@ def run_step(
     )
     stop = threading.Event()
     samples: list[tuple[float, float]] = []
+    docker_samples: list[dict[str, object]] = []
     process = subprocess.Popen(command, env=environment)
     sampler = threading.Thread(
         target=_sample_process, args=(process.pid, stop, samples), daemon=True
     )
     sampler.start()
+    docker_sampler = threading.Thread(
+        target=_sample_docker, args=(stop, docker_samples), daemon=True
+    )
+    docker_sampler.start()
     try:
         returncode = process.wait()
     finally:
         stop.set()
         sampler.join(timeout=2.0)
+        _finalize_docker_samples(docker_sampler, stop, docker_samples)
     measured = bool(samples)
     avg_cpu = sum(s[0] for s in samples) / len(samples) if samples else 0.0
     avg_mem = sum(s[1] for s in samples) / len(samples) if samples else 0.0
-    return returncode, avg_cpu, avg_mem, measured, measured
+    peak_cpu = max((s[0] for s in samples), default=0.0)
+    peak_mem = max((s[1] for s in samples), default=0.0)
+    docker_peak = _docker_peak(docker_samples)
+    return (
+        returncode,
+        avg_cpu,
+        avg_mem,
+        peak_cpu,
+        peak_mem,
+        measured,
+        measured,
+        docker_peak,
+    )
 
 
 def run_organizer_profile(
@@ -447,14 +699,14 @@ def run_organizer_profile(
     max_users: int,
     output_dir: Path,
     required_concurrent_users: int = 0,
-) -> tuple[int, float, float, bool, bool]:
+) -> tuple[int, float, float, float, float, bool, bool, dict[str, object]]:
     """Run the single continuous organizer profile and return process stats.
 
     The Locust process is started once; the LoadTestShape in the locustfile
     drives the user count and the dynamic wait_time paces each user so the
     target RPS follows the organizer profile over 480s. Returns the same tuple
-    shape as ``run_step`` (exit code, avg CPU, avg RAM, cpu measured, mem
-    measured).
+    shape as ``run_step`` (exit code, avg CPU, avg RAM, peak CPU, peak RAM,
+    cpu measured, mem measured, docker peak).
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     reset_step_outputs(output_dir)
@@ -497,20 +749,38 @@ def run_organizer_profile(
     )
     stop = threading.Event()
     samples: list[tuple[float, float]] = []
+    docker_samples: list[dict[str, object]] = []
     process = subprocess.Popen(command, env=environment)
     sampler = threading.Thread(
         target=_sample_process, args=(process.pid, stop, samples), daemon=True
     )
     sampler.start()
+    docker_sampler = threading.Thread(
+        target=_sample_docker, args=(stop, docker_samples), daemon=True
+    )
+    docker_sampler.start()
     try:
         returncode = process.wait()
     finally:
         stop.set()
         sampler.join(timeout=2.0)
+        _finalize_docker_samples(docker_sampler, stop, docker_samples)
     measured = bool(samples)
     avg_cpu = sum(s[0] for s in samples) / len(samples) if samples else 0.0
     avg_mem = sum(s[1] for s in samples) / len(samples) if samples else 0.0
-    return returncode, avg_cpu, avg_mem, measured, measured
+    peak_cpu = max((s[0] for s in samples), default=0.0)
+    peak_mem = max((s[1] for s in samples), default=0.0)
+    docker_peak = _docker_peak(docker_samples)
+    return (
+        returncode,
+        avg_cpu,
+        avg_mem,
+        peak_cpu,
+        peak_mem,
+        measured,
+        measured,
+        docker_peak,
+    )
 
 
 def read_aggregate(stats_path: Path) -> dict[str, str]:
@@ -638,6 +908,8 @@ def build_result(
     custom_metrics: dict[str, int] | None = None,
     cpu_percent: float | None = None,
     memory_mb: float | None = None,
+    peak_cpu_percent: float | None = None,
+    peak_memory_mb: float | None = None,
     cpu_measured: bool = False,
     memory_measured: bool = False,
     min_duration_for_stable: int = 30,
@@ -810,6 +1082,8 @@ def build_result(
         memory_measured=memory_measured,
         cpu_percent=cpu_percent,
         memory_mb=memory_mb,
+        peak_cpu_percent=peak_cpu_percent,
+        peak_memory_mb=peak_memory_mb,
         locust_exit_code=locust_exit_code,
         passed=not violations,
         violations=violations,
@@ -838,14 +1112,20 @@ def write_reports(
         "",
         "| Target RPS | Actual RPS | Ratio | avg | p50 | p95 | p99 | "
         "MASK | DEMASK | Incomplete | 2xx | 429 | 422 | other | func-err | t-err | "
-        "CPU% | RAM MB | dur | Errors | Result |",
+        "CPU% | RAM MB | peak CPU% | peak RAM MB | dur | Errors | Result |",
         "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
-        "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |",
+        "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |",
     ]
     for result in results:
         status = "PASS" if result.passed else "FAIL: " + "; ".join(result.violations)
         cpu = f"{result.cpu_percent:.1f}" if result.cpu_percent is not None else "n/a"
         mem = f"{result.memory_mb:.1f}" if result.memory_mb is not None else "n/a"
+        peak_cpu = (
+            f"{result.peak_cpu_percent:.1f}" if result.peak_cpu_percent is not None else "n/a"
+        )
+        peak_mem = (
+            f"{result.peak_memory_mb:.1f}" if result.peak_memory_mb is not None else "n/a"
+        )
         lines.append(
             f"| {result.target_rps:.0f} | {result.achieved_rps:.1f} | "
             f"{result.achieved_ratio:.2f} | {result.avg_ms:.1f} ms | "
@@ -854,7 +1134,7 @@ def write_reports(
             f"{result.incomplete_roundtrips} | {result.http_2xx} | "
             f"{result.http_429} | {result.http_422} | {result.http_other} | "
             f"{result.functional_errors} | {result.transport_errors} | "
-            f"{cpu} | {mem} | "
+            f"{cpu} | {mem} | {peak_cpu} | {peak_mem} | "
             f"{result.duration_seconds}s | "
             f"{result.error_rate_percent:.2f}% | {status} |"
         )
@@ -901,6 +1181,13 @@ def main() -> int:
     parser.add_argument("--min-peak-ratio", type=float, default=0.0)
     parser.add_argument("--max-incomplete-ratio", type=float, default=0.01)
     parser.add_argument(
+        "--server-config",
+        default=None,
+        help="Operator-declared server configuration as key=value pairs "
+        "separated by commas (e.g. 'backend=redis,workers=4,logging=quiet'). "
+        "Recorded verbatim and NOT verified by the runner.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=PROJECT_ROOT
@@ -943,7 +1230,16 @@ def main() -> int:
             f"target={target:g} RPS users={users} scenario={args.scenario} "
             f"duration={args.duration}s"
         )
-        exit_code, avg_cpu, avg_mem, cpu_measured, mem_measured = run_step(
+        (
+            exit_code,
+            avg_cpu,
+            avg_mem,
+            peak_cpu,
+            peak_mem,
+            cpu_measured,
+            mem_measured,
+            docker_peak,
+        ) = run_step(
             args.host,
             target,
             users,
@@ -975,6 +1271,8 @@ def main() -> int:
             custom_metrics=custom_metrics,
             cpu_percent=avg_cpu if cpu_measured else None,
             memory_mb=avg_mem if mem_measured else None,
+            peak_cpu_percent=peak_cpu if cpu_measured else None,
+            peak_memory_mb=peak_mem if mem_measured else None,
             cpu_measured=cpu_measured,
             memory_measured=mem_measured,
             min_duration_for_stable=args.min_duration_for_stable,
@@ -1001,13 +1299,15 @@ def _run_organizer(args: argparse.Namespace) -> int:
         f"duration={ORGANIZER_DURATION}s target_average={ORGANIZER_TARGET_AVERAGE:.4f} "
         f"max_users={args.max_users} rps_per_user={args.rps_per_user}"
     )
-    exit_code, avg_cpu, avg_mem, cpu_measured, mem_measured = run_organizer_profile(
-        args.host,
-        args.scenario,
-        args.rps_per_user,
-        args.max_users,
-        args.output_dir,
-        args.required_concurrent_users,
+    exit_code, avg_cpu, avg_mem, peak_cpu, peak_mem, cpu_measured, mem_measured, docker_peak = (
+        run_organizer_profile(
+            args.host,
+            args.scenario,
+            args.rps_per_user,
+            args.max_users,
+            args.output_dir,
+            args.required_concurrent_users,
+        )
     )
     try:
         aggregate = read_authoritative_aggregate(args.output_dir)
@@ -1032,6 +1332,8 @@ def _run_organizer(args: argparse.Namespace) -> int:
         custom_metrics=custom_metrics,
         cpu_percent=avg_cpu if cpu_measured else None,
         memory_mb=avg_mem if mem_measured else None,
+        peak_cpu_percent=peak_cpu if cpu_measured else None,
+        peak_memory_mb=peak_mem if mem_measured else None,
         cpu_measured=cpu_measured,
         memory_measured=mem_measured,
         min_duration_for_stable=args.min_duration_for_stable,
@@ -1042,6 +1344,7 @@ def _run_organizer(args: argparse.Namespace) -> int:
         min_peak_ratio=args.min_peak_ratio,
         max_incomplete_ratio=args.max_incomplete_ratio,
     )
+    environment = _apply_server_config(collect_environment(), args.server_config)
     profile = {
         "name": "organizer",
         "duration_seconds": ORGANIZER_DURATION,
@@ -1054,10 +1357,10 @@ def _run_organizer(args: argparse.Namespace) -> int:
         "phases": list(ORGANIZER_PHASES),
         "actual_average_rps": result.achieved_rps,
         "target_vs_actual_delta": result.achieved_rps - ORGANIZER_TARGET_AVERAGE,
-        "environment": collect_environment(),
-        "docker_metrics": collect_docker_metrics(),
+        "environment": environment,
+        "docker_metrics": docker_peak,
         "stage_timings": collect_stage_timings(args.host),
-        "run_command": " ".join(sys.argv),
+        "run_parameters": run_parameters(),
     }
     write_reports(args.output_dir, args.scenario, [result], profile=profile)
     print(json.dumps(asdict(result), ensure_ascii=False))

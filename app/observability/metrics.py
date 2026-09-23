@@ -7,6 +7,7 @@ keeps tests isolated and avoids duplicate collector registration.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -77,6 +78,14 @@ class Metrics:
             buckets=HTTP_LATENCY_BUCKETS,
             registry=self.registry,
         )
+        self.stage_max = Gauge(
+            "pii_proxy_stage_max_seconds",
+            "Largest observed duration of a processing stage in this worker.",
+            ("stage",),
+            registry=self.registry,
+        )
+        self._stage_max_lock = threading.Lock()
+        self._stage_max_values: dict[str, float] = {}
 
     @staticmethod
     def _safe(operation: object, method: str, *args: object, **kwargs: object) -> None:
@@ -133,6 +142,10 @@ class Metrics:
             "observe",
             duration_seconds,
         )
+        with self._stage_max_lock:
+            if duration_seconds > self._stage_max_values.get(stage, 0.0):
+                self._stage_max_values[stage] = duration_seconds
+                self._safe(self.stage_max.labels(stage=stage), "set", duration_seconds)
 
     def render(self) -> bytes:
         return generate_latest(self.registry)

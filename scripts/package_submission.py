@@ -58,11 +58,37 @@ def is_secret_environment_file(name: str) -> bool:
     return name.startswith(".env") and name != ".env.example"
 
 
+def is_pytest_temp_dir(name: str) -> bool:
+    """Return True for pytest temporary directories.
+
+    Covers the conventional ``.pytest_cache``/``.pytest-*`` names and the
+    mangled directories pytest can create inside the project root when a
+    ``--basetemp`` path is mis-expanded on Windows (e.g. a ``~`` in a short path
+    or backslashes stripped), such as ``...pytest-basetemp`` or
+    ``...pytest-temp``. Any path component whose name contains ``.pytest`` or
+    ``pytest-temp``/``pytest-basetemp`` is treated as a pytest temp dir and must
+    never be packaged.
+    """
+    lowered = name.lower()
+    return (
+        lowered.startswith(".pytest")
+        or lowered.startswith("pytest-")
+        or "pytest-basetemp" in lowered
+        or "pytest-temp" in lowered
+        or ".pytest" in lowered
+    )
+
+
 def is_excluded_relative(path: Path) -> bool:
     return (
         is_secret_environment_file(path.name)
         or path.suffix.lower() in EXCLUDED_SUFFIXES
-        or any(part in EXCLUDED_DIRS or part.endswith(".egg-info") for part in path.parts)
+        or any(
+            part in EXCLUDED_DIRS
+            or part.endswith(".egg-info")
+            or is_pytest_temp_dir(part)
+            for part in path.parts
+        )
     )
 
 
@@ -74,7 +100,9 @@ def collect_files(root: Path, excluded_paths: set[Path] | None = None) -> list[P
         dirnames[:] = sorted(
             directory
             for directory in dirnames
-            if directory not in EXCLUDED_DIRS and not directory.endswith(".egg-info")
+            if directory not in EXCLUDED_DIRS
+            and not directory.endswith(".egg-info")
+            and not is_pytest_temp_dir(directory)
         )
         for filename in sorted(filenames):
             raw_path = Path(dirpath) / filename
@@ -217,18 +245,33 @@ def smoke_validate_zip(output_path: Path) -> None:
                 check=True,
                 capture_output=True,
             )
-            subprocess.run(
+            # Run the pytest subset with an explicit --basetemp inside the
+            # extract dir. This avoids the system-wide pytest temp directory
+            # (which can be unwritable or permission-restricted on some hosts)
+            # and keeps all smoke artifacts inside the temporary extract dir.
+            pytest_basetemp = extract_dir / ".pytest-temp"
+            pytest_basetemp.mkdir(parents=True, exist_ok=True)
+            proc = subprocess.run(
                 [
                     sys.executable,
                     "-m",
                     "pytest",
                     "tests/integration/test_process.py",
                     "-q",
+                    "--basetemp",
+                    str(pytest_basetemp),
                 ],
                 cwd=extract_dir,
-                check=True,
+                check=False,
                 capture_output=True,
+                text=True,
             )
+            if proc.returncode != 0:
+                # PII-free diagnostic: only the exit code. The pytest output is
+                # not echoed because it may contain payloads or secrets.
+                raise RuntimeError(
+                    f"smoke pytest subset failed (exit {proc.returncode})"
+                )
             print("smoke pytest subset: ok")
     print(f"Smoke-validated {output_path.resolve()}")
 

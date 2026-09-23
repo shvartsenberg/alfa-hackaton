@@ -94,6 +94,31 @@ def test_stage_timings_recorded_per_stage() -> None:
     )
 
 
+def test_stage_max_gauge_tracks_largest_observed_duration() -> None:
+    metrics = Metrics(CollectorRegistry())
+    recorder = MetricsRecorder(metrics)
+    recorder.record_stage("state_lookup", 1.0)
+    recorder.record_stage("state_lookup", 3.0)
+    recorder.record_stage("state_lookup", 2.0)
+
+    # The gauge must hold the largest observed duration (3.0 ms -> 0.003 s),
+    # not the histogram's largest bucket bound.
+    assert (
+        _sample(metrics, "pii_proxy_stage_max_seconds", {"stage": "state_lookup"})
+        == 0.003
+    )
+
+
+def test_stage_max_gauge_never_decreases() -> None:
+    metrics = Metrics(CollectorRegistry())
+    recorder = MetricsRecorder(metrics)
+    recorder.record_stage("prepare", 5.0)
+    recorder.record_stage("prepare", 1.0)
+    recorder.record_stage("prepare", 4.0)
+
+    assert _sample(metrics, "pii_proxy_stage_max_seconds", {"stage": "prepare"}) == 0.005
+
+
 def test_render_prometheus_contains_standard_metric_names() -> None:
     metrics = Metrics(CollectorRegistry())
     metrics.observe_http_request("GET", "/health", 200, 0.001)

@@ -23,14 +23,27 @@ os.environ.setdefault("LOCUST_SKIP_MONKEY_PATCH", "1")
 from scripts.run_performance import (
     ORGANIZER_DURATION,
     ORGANIZER_TARGET_AVERAGE,
+    _apply_server_config,
+    _container_id_matches,
+    _docker_peak,
+    _finalize_docker_samples,
     build_result,
     check_health,
+    collect_environment,
+    collect_stage_timings,
     read_authoritative_aggregate,
     read_custom_metrics,
     read_history_metrics,
+    redact_host,
     redact_url,
+    run_parameters,
 )
 from tests.performance import locustfile
+
+# Mark every test in this module as a performance test so that
+# ``pytest -m performance`` selects exactly this file. The default pytest
+# ``addopts`` excludes the ``performance`` marker, so these tests are opt-in.
+pytestmark = pytest.mark.performance
 
 
 class _FakeResponse:
@@ -1591,6 +1604,69 @@ def test_redact_url_strips_credentials() -> None:
     assert redact_url("http://localhost:8000") == "http://localhost:8000"
 
 
+def test_redact_host_strips_userinfo_and_query() -> None:
+    assert redact_host("http://user:pass@localhost:8000") == "http://localhost:8000"
+    assert redact_host("http://localhost:8000?token=secret") == "http://localhost:8000"
+    assert redact_host("http://user:pass@localhost:8000?token=secret#frag") == (
+        "http://localhost:8000"
+    )
+
+
+def test_run_parameters_never_contains_secret_in_server_config() -> None:
+    argv = [
+        "python",
+        "scripts/run_performance.py",
+        "--profile",
+        "organizer",
+        "--server-config",
+        "backend=redis,password=supersecret",
+        "--host",
+        "http://localhost:8000",
+    ]
+    params = run_parameters(argv)
+    # The --server-config value (which may contain a password) must never be
+    # persisted; only the allowlisted safe parameters are returned.
+    assert "supersecret" not in json.dumps(params)
+    assert "server_config" not in params
+    assert params["profile"] == "organizer"
+    assert params["host"] == "http://localhost:8000"
+
+
+def test_run_parameters_redacts_host_query_token() -> None:
+    argv = [
+        "python",
+        "scripts/run_performance.py",
+        "--host",
+        "http://localhost:8000?token=supersecret",
+    ]
+    params = run_parameters(argv)
+    assert "supersecret" not in json.dumps(params)
+    assert params["host"] == "http://localhost:8000"
+
+
+def test_run_parameters_ignores_unknown_flags() -> None:
+    argv = [
+        "python",
+        "scripts/run_performance.py",
+        "--profile",
+        "steps",
+        "--unknown-flag",
+        "MASKING_KEY=supersecret",
+        "--targets",
+        "100,330",
+    ]
+    params = run_parameters(argv)
+    assert "supersecret" not in json.dumps(params)
+    assert "unknown_flag" not in params
+    assert params["profile"] == "steps"
+    assert params["targets"] == "100,330"
+
+
+def test_run_parameters_keeps_plain_args() -> None:
+    argv = ["python", "scripts/run_performance.py", "--profile", "organizer"]
+    assert run_parameters(argv) == {"profile": "organizer"}
+
+
 def test_read_history_metrics(tmp_path: Path) -> None:
     history = tmp_path / "stats_stats_history.csv"
     history.write_text(
@@ -1610,3 +1686,274 @@ def test_read_history_metrics_missing_returns_zero(tmp_path: Path) -> None:
     max_users, peak_rps = read_history_metrics(tmp_path)
     assert max_users == 0.0
     assert peak_rps == 0.0
+
+
+# --- peak CPU/RAM reporting (new schema) ------------------------------------
+
+
+def test_build_result_records_peak_cpu_and_memory() -> None:
+    result = build_result(
+        _row(),
+        target_rps=100,
+        users=200,
+        duration_seconds=60,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics=_roundtrip_custom(),
+        cpu_percent=10.0,
+        memory_mb=50.0,
+        peak_cpu_percent=45.0,
+        peak_memory_mb=80.0,
+        cpu_measured=True,
+        memory_measured=True,
+    )
+    assert result.cpu_percent == 10.0
+    assert result.memory_mb == 50.0
+    assert result.peak_cpu_percent == 45.0
+    assert result.peak_memory_mb == 80.0
+
+
+def test_build_result_peak_unknown_when_not_measured() -> None:
+    result = build_result(
+        _row(),
+        target_rps=100,
+        users=200,
+        duration_seconds=60,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics=_roundtrip_custom(),
+        cpu_measured=False,
+        memory_measured=False,
+    )
+    assert result.peak_cpu_percent is None
+    assert result.peak_memory_mb is None
+
+
+# --- docker peak reduction (during-run sampling) ----------------------------
+
+
+def test_docker_peak_reduces_samples_to_peaks() -> None:
+    samples = [
+        {
+            "app": {"cpu_percent": 10.0, "memory_mb": 50.0},
+            "redis": {"cpu_percent": 5.0, "memory_mb": 20.0},
+        },
+        {
+            "app": {"cpu_percent": 45.0, "memory_mb": 80.0},
+            "redis": {"cpu_percent": 8.0, "memory_mb": 25.0},
+        },
+        {
+            "app": {"cpu_percent": 30.0, "memory_mb": 70.0},
+            "redis": {"cpu_percent": 6.0, "memory_mb": 22.0},
+        },
+    ]
+    peak = _docker_peak(samples)
+    assert peak["unavailable"] is False
+    assert peak["app"] == {
+        "sampled_peak_cpu_percent": 45.0,
+        "sampled_peak_memory_mb": 80.0,
+    }
+    assert peak["redis"] == {
+        "sampled_peak_cpu_percent": 8.0,
+        "sampled_peak_memory_mb": 25.0,
+    }
+
+
+def test_docker_peak_unavailable_when_no_samples() -> None:
+    peak = _docker_peak([])
+    assert peak["unavailable"] is True
+    assert peak["app"] is None
+    assert peak["redis"] is None
+
+
+def test_docker_peak_unavailable_when_docker_missing() -> None:
+    peak = _docker_peak([{"unavailable": True}])
+    assert peak["unavailable"] is True
+    assert peak["app"] is None
+    assert peak["redis"] is None
+
+
+def test_container_id_matches_full_and_short_forms() -> None:
+    full = "a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f708192a3b4c5d6e7f809"
+    short = "a1b2c3d4e5f6"
+    # docker compose ps -q returns the full ID; docker stats returns the short
+    # ID. Both directions must match.
+    assert _container_id_matches(short, full) is True
+    assert _container_id_matches(full, short) is True
+    # Identical IDs match.
+    assert _container_id_matches(full, full) is True
+    # Unrelated 12+ hex IDs do not match.
+    assert _container_id_matches("deadbeefcafe", full) is False
+    # Empty IDs never match.
+    assert _container_id_matches("", full) is False
+    assert _container_id_matches(short, "") is False
+
+
+def test_container_id_matches_rejects_short_and_non_hex() -> None:
+    full = "a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f708192a3b4c5d6e7f809"
+    # A single-character prefix must not match (too short to be unambiguous).
+    assert _container_id_matches("a", full) is False
+    # A non-hexadecimal string must not match even if long enough.
+    assert _container_id_matches("zzzzzzzzzzzz", full) is False
+    assert _container_id_matches(full, "zzzzzzzzzzzz") is False
+    # A short non-hex string must not match.
+    assert _container_id_matches("deadbeef", full) is False
+
+
+def test_finalize_docker_samples_marks_incomplete_when_thread_still_alive() -> None:
+    import threading
+
+    stop = threading.Event()
+    samples: list[dict[str, object]] = []
+
+    class _NeverEnding(threading.Thread):
+        def join(self, timeout=None):  # type: ignore[override]
+            # Simulate a sampler that never finishes within the join timeout.
+            return None
+
+        def is_alive(self) -> bool:
+            return True
+
+    thread = _NeverEnding()
+    _finalize_docker_samples(thread, stop, samples)
+    # The sampler did not finish, so the samples must be marked unavailable and
+    # incomplete rather than racing with a still-running thread.
+    assert samples[-1] == {"unavailable": True, "incomplete": True}
+    assert stop.is_set()
+
+
+def test_finalize_docker_samples_does_not_mark_when_thread_finishes() -> None:
+    import threading
+
+    stop = threading.Event()
+    samples: list[dict[str, object]] = [{"app": None, "redis": None}]
+
+    class _Quick(threading.Thread):
+        def join(self, timeout=None):  # type: ignore[override]
+            return None
+
+        def is_alive(self) -> bool:
+            return False
+
+    _finalize_docker_samples(_Quick(), stop, samples)
+    # The sampler finished, so no incomplete marker is appended.
+    assert samples == [{"app": None, "redis": None}]
+    assert stop.is_set()
+
+
+# --- operator-declared server config ----------------------------------------
+
+
+def test_apply_server_config_defaults_to_unverified() -> None:
+    env = collect_environment()
+    assert env["server_configuration"]["source"] == "operator_declared_unverified"
+    assert env["server_configuration"]["backend"] is None
+
+
+def test_apply_server_config_merges_operator_values() -> None:
+    env = collect_environment()
+    merged = _apply_server_config(env, "backend=redis,workers=4,logging=quiet")
+    server = merged["server_configuration"]
+    assert server["backend"] == "redis"
+    assert server["workers"] == 4
+    assert server["logging"] == "quiet"
+    assert server["source"] == "operator_declared_unverified"
+
+
+def test_apply_server_config_ignores_unknown_keys() -> None:
+    env = collect_environment()
+    merged = _apply_server_config(env, "backend=redis,secret=leak")
+    server = merged["server_configuration"]
+    assert server["backend"] == "redis"
+    assert "secret" not in server
+
+
+def test_apply_server_config_rejects_invalid_values() -> None:
+    env = collect_environment()
+    merged = _apply_server_config(
+        env,
+        "backend=mysql,workers=0,logging=verbose,workers=abc",
+    )
+    server = merged["server_configuration"]
+    # Invalid backend, non-positive workers, and unknown logging are rejected.
+    assert server["backend"] is None
+    assert server["workers"] is None
+    assert server["logging"] is None
+
+
+def test_apply_server_config_never_stores_launch_command() -> None:
+    env = collect_environment()
+    merged = _apply_server_config(
+        env,
+        "backend=redis,launch_command=uvicorn app.main:app MASKING_KEY=topsecret",
+    )
+    server = merged["server_configuration"]
+    # launch_command is deliberately not accepted: an arbitrary command may
+    # contain secrets that cannot be reliably redacted.
+    assert "launch_command" not in server
+    assert "topsecret" not in json.dumps(server)
+    assert server["backend"] == "redis"
+
+
+# --- stage timings: observed max from gauge, not histogram bound ------------
+
+
+def test_collect_stage_timings_uses_observed_max_gauge(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import urllib.request
+
+    body = (
+        "# HELP pii_proxy_stage_duration_seconds Duration of a processing stage.\n"
+        "# TYPE pii_proxy_stage_duration_seconds histogram\n"
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="0.001"} 0\n'
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="0.005"} 0\n'
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="0.01"} 0\n'
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="0.025"} 0\n'
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="0.05"} 0\n'
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="0.1"} 0\n'
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="0.25"} 0\n'
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="0.5"} 0\n'
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="1"} 0\n'
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="2.5"} 0\n'
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="5"} 0\n'
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="10"} 0\n'
+        'pii_proxy_stage_duration_seconds_bucket{stage="prepare",le="+Inf"} 2\n'
+        'pii_proxy_stage_duration_seconds_sum{stage="prepare"} 0.02\n'
+        'pii_proxy_stage_duration_seconds_count{stage="prepare"} 2\n'
+        "# HELP pii_proxy_stage_max_seconds Largest observed duration of a processing stage.\n"
+        "# TYPE pii_proxy_stage_max_seconds gauge\n"
+        'pii_proxy_stage_max_seconds{stage="prepare"} 0.012\n'
+    )
+
+    class _FakeResp:
+        def __init__(self, text: str):
+            self._text = text
+
+        def read(self) -> bytes:
+            return self._text.encode("utf-8")
+
+        def __enter__(self) -> _FakeResp:
+            return self
+
+        def __exit__(self, *exc) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda url, timeout: _FakeResp(body),
+    )
+    result = collect_stage_timings("http://localhost:8000")
+    prepare = result["prepare"]
+    assert prepare["count"] == 2
+    # The observed max must come from the gauge (0.012), not the largest
+    # histogram bucket bound (10).
+    assert prepare["max_seconds"] == 0.012
+    assert prepare["scope"] == "responding_worker_only"

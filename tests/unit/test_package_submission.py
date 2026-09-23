@@ -52,6 +52,27 @@ def test_collect_files_excludes_generated_and_secret_files(tmp_path: Path) -> No
         assert path.relative_to(tmp_path).as_posix() not in names
 
 
+def test_collect_files_excludes_pytest_temp_dirs(tmp_path: Path) -> None:
+    _minimal_project(tmp_path)
+    # A conventional pytest cache dir and a mangled --basetemp dir (the name
+    # pytest can create inside the project root when a Windows short path with
+    # a "~" is mis-expanded) must both be excluded from the archive.
+    pytest_dirs = (
+        tmp_path / ".pytest_cache" / "v" / "cache",
+        tmp_path / ".pytest-temp" / "test_x0",
+        tmp_path / "UsersSHARCE~1AppDataLocalTempopencodepytest-basetemp" / "test_y0",
+        tmp_path / "UsersSharcenbergProjectsPythonalfa-hackaton.pytest-temp" / "test_z0",
+    )
+    for path in pytest_dirs:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "artifact.json").write_text("temp", encoding="utf-8")
+
+    names = {path.relative_to(tmp_path).as_posix() for path in collect_files(tmp_path)}
+    for path in pytest_dirs:
+        assert path.relative_to(tmp_path).as_posix() not in names
+    assert not any("pytest" in name for name in names)
+
+
 def test_build_zip_is_deterministic_and_safe(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

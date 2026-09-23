@@ -179,16 +179,16 @@ defense-in-depth cap `min(..., 200)` даже если `ORGANIZER_MAX_USERS` з�
 (фазы, `target_average_rps`, `actual_average_rps`, `target_vs_actual_delta`).
 Строгая сверка счётчиков сохраняется.
 
-> **Не проверено реальным полным 8-минутным прогоном.** Этот профиль
-> реализован и покрыт unit-тестами чистой функции `target_rps_at(t)`, cap
-> пользователей и CLI-валидации. Выполнен короткий исполняемый smoke
+> **Полные 480-секундные прогоны выполнены** (см. раздел 9.7 и
+> `docs/qa-report.md`): несколько полных `--profile organizer` прогонов против
+> локального приложения (memory single-worker и Redis multiworker). Все они
+> **FAIL** по RPS-гейту (фактический средний ~284–308 RPS против target 330.94)
+> и не достигают пика 1000 RPS (наблюдалось ~543–852 RPS). Профиль реализован
+> и покрыт unit-тестами чистой функции `target_rps_at(t)`, cap пользователей и
+> CLI-валидации. Короткий исполняемый smoke
 > (`ORGANIZER_DURATION=5`, `ORGANIZER_MAX_USERS=5`, `ORGANIZER_RPS_PER_USER=1`)
-> против локального приложения: exit 0, 19 запросов, 0 ошибок, счётчики
-> сверены (custom total 19 == CSV Request Count 19). Это подтверждает работу
-> shape + динамического `wait_time` + записи custom metrics при остановке, но
-> **не** является результатом capacity/SLA и не заменяет полный 480-секундный
-> прогон. Ранее сохранённый низконагрузочный smoke относится к старой версии
-> сценария и не является доказательством нового профиля.
+> подтверждает работу shape + динамического `wait_time` + записи custom metrics
+> при остановке, но **не** является результатом capacity/SLA.
 
 ## 9.1. Метрики
 
@@ -251,22 +251,14 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 ### Redis password
 
-**Текущий `docker-compose.yml` НЕ включает аутентификацию Redis**: `redis-server`
-запускается без `--requirepass`, а `REDIS_URL` жёстко задан без пароля
-(`redis://redis:6379/0`). Переменная `REDIS_PASSWORD` в compose лишь
-передаётся в environment контейнера и не активирует пароль. Не заявляйте
-security guarantee, которой нет.
-
-Для внешнего защищённого Redis укажите URL с учётными данными:
+**Текущий `docker-compose.yml` включает аутентификацию Redis**: `redis-server`
+запускается с `--requirepass "$REDIS_PASSWORD"`, а `REDIS_URL` содержит пароль
+(`redis://:${REDIS_PASSWORD}@redis:6379/0`). Пароль обязателен и никогда не
+логируется. Для внешнего защищённого Redis укажите URL с учётными данными:
 
 ```bash
 REDIS_URL=redis://:password@redis-host:6379/0
 ```
-
-Конфигурацию compose с реальным паролем (добавить `--requirepass` в
-`command` и использовать `redis://:${REDIS_PASSWORD}@redis:6379/0` в
-`REDIS_URL`) следует передать владельцу Core — это изменение вне зоны
-данного модуля.
 
 ## 9.5. Health / readiness
 
@@ -310,12 +302,21 @@ python scripts/run_performance.py --host http://localhost:8000 \
   --targets 100,330,500,1000 --scenario mixed --duration 120
 ```
 
-## 9.7. Подтверждённый Redis-прогон (основной production-профиль)
+## 9.7. Ранее заявленный Redis-прогон (основной production-профиль)
+
+> **Важно про статус этого прогона.** Это **ранее заявленный/описанный**
+> Redis-прогон с измеренным RPS/latency. Его артефакты сохранены по **старой
+> схеме** и **не содержат** metadata новой схемы (`environment`,
+> `server_configuration`, `docker_metrics`, `stage_timings`), поэтому он **не
+> является доказательством** backend/workers/конфигурации сервера. Новая схема
+> отчётности пока **не проверена полным 480-секундным прогоном** (Docker здесь
+> недоступен). Числа ниже — это заявленные ранее измерения, а не подтверждённые
+> новой схемой.
 
 Основной production-профиль — **Redis** (несколько workers). Memory-бэкенд
 остаётся для диагностики и **не** является основным benchmark.
 
-Подтверждённый 480-секундный прогон (4 workers, Redis, `roundtrip`):
+Ранее заявленный 480-секундный прогон (4 workers, Redis, `roundtrip`):
 
 | Метрика | Значение |
 | --- | --- |
@@ -332,20 +333,34 @@ python scripts/run_performance.py --host http://localhost:8000 \
 **Важно про concurrency.** `configured_max_users` — это настроенный предел,
 а не фактически достигнутая concurrency. `observed_max_users` вычисляется из
 истории Locust (`stats_stats_history.csv`) и отражает реально активных
-пользователей. Для гарантии 200 одновременных соединений используйте
-`--required-concurrent-users 200`; без него генератор может создать меньше
-пользователей, чем предел.
+пользователей. **Активные Locust-пользователи — это НЕ одновременные HTTP
+соединения**: каждый `FastHttpUser` поддерживает пул соединений и может
+выполнять запросы последовательно, поэтому число пользователей не равно числу
+параллельных соединений к серверу. Для гарантии 200 активных пользователей
+используйте `--required-concurrent-users 200`; без него генератор может создать
+меньше пользователей, чем предел.
 
 **Важно про peak RPS.** `observed_peak_rps` — фактический пик из истории.
 Пик 1000 RPS **не подтверждён** фактическими измерениями (наблюдалось ~852
 RPS). Не заявляйте 1000 RPS без реального прогона.
 
+**Метрики ресурсов.** Отчёт сохраняет средний и **пиковый** CPU/RAM load
+generator, а также пиковый CPU/RAM контейнеров app/Redis, сэмплируемые **в ходе**
+прогона через `docker stats`. При отсутствии Docker эти значения честно
+показываются как `unavailable`, а не выдумываются. Конфигурация сервера
+(backend, число workers, команда запуска, логирование) в `summary.json` всегда
+помечается как `operator_declared_unverified`: даже если оператор передал её
+через `--server-config`, runner её не проверяет, поэтому источник никогда не
+становится «verified». Runner не выдаёт собственное окружение за конфигурацию
+удалённого сервера.
+
 Артефакты: `artifacts/performance/final-organizer-redis/` (`summary.json`,
 `summary.md`, `final_stats.csv`, `custom_metrics.json`,
 `stats_stats_history.csv`). Performance-артефакты не попадают в ZIP.
 
-**Не проверено** в этом прогоне: Redis store, multiworker, большие payload.
-Точные команды/окружение для них:
+**Не проверено** в этом прогоне: большие payload. Redis store и multiworker
+проверены этим прогоном (см. таблицу выше). Точные команды/окружение для
+повтора:
 
 ```bash
 # Redis store (требует MASKING_KEY и запущенный Redis)
