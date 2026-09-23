@@ -175,3 +175,33 @@ def test_concurrent_different_payloads_one_owner() -> None:
     final = store.get("shared")
     assert final is not None
     assert len(outcomes) == 4
+
+
+def test_consumer_id_roundtrip_redis() -> None:
+    store = _store()
+    state = _state("abc")
+    state.consumer_id = "consumer-1"
+    store.save("abc", state)
+    restored = store.get("abc")
+    assert restored is not None
+    assert restored.consumer_id == "consumer-1"
+
+
+def test_old_record_without_consumer_id_reads_as_empty_redis() -> None:
+    import json
+
+    client = fakeredis.FakeRedis()
+    store = _store(client=client)
+    state = _state("abc")
+    store.save("abc", state)
+    # Build a legacy JSON payload without consumer_id and encrypt it directly.
+    data = json.loads(state.to_json())
+    data.pop("consumer_id", None)
+    encrypted = store._fernet.encrypt(json.dumps(data).encode("utf-8"))
+    keys = [k for k in client.keys("pii:restore:*")]
+    assert len(keys) == 1
+    client.set(keys[0], encrypted)
+
+    restored = store.get("abc")
+    assert restored is not None
+    assert restored.consumer_id == ""

@@ -41,11 +41,12 @@ jobs:
         run: pytest -m concurrency
 
       - name: Validate Docker Compose
-        # docker compose config requires MASKING_KEY to be set. Use a safe,
-        # throwaway test value here; it is only used to render the compose file
-        # and is never shipped or used at runtime.
+        # docker compose config requires MASKING_KEY and REDIS_PASSWORD to be
+        # set. Use safe, throwaway test values here; they are only used to
+        # render the compose file and are never shipped or used at runtime.
         env:
           MASKING_KEY: "test-only-compose-config-key-not-used-at-runtime"
+          REDIS_PASSWORD: "ci-dummy-redis-password"
         run: docker compose config
 
       - name: Check for whitespace errors

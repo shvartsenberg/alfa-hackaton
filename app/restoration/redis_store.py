@@ -21,11 +21,13 @@ import hashlib
 import hmac
 import logging
 import os
+import random
+import time
 
 import redis
 from cryptography.fernet import Fernet
 
-from app.core.exceptions import ProcessingError
+from app.core.exceptions import ServiceOverloadedError
 from app.restoration.base import RestorationStore, TransitionFn
 from app.restoration.models import RestorationState
 
@@ -33,6 +35,8 @@ logger = logging.getLogger("pii_security_proxy.restoration.redis")
 
 _KEY_PREFIX = "pii:restore:"
 _MAX_CAS_RETRIES = 5
+# Base backoff (seconds) between CAS retries; doubled per attempt with jitter.
+_CAS_BACKOFF_BASE = 0.005
 
 
 class RedisRestorationStore(RestorationStore):
@@ -103,7 +107,7 @@ class RedisRestorationStore(RestorationStore):
         self, payload_id: str, fn: TransitionFn
     ) -> RestorationState | None:
         key = self._key(payload_id)
-        for _ in range(_MAX_CAS_RETRIES):
+        for attempt in range(_MAX_CAS_RETRIES):
             with self._client.pipeline() as pipe:
                 try:
                     pipe.watch(key)  # type: ignore[no-untyped-call]
@@ -120,6 +124,13 @@ class RedisRestorationStore(RestorationStore):
                     pipe.execute()
                     return new_state
                 except redis.WatchError:
-                    # The key changed while we were computing; retry.
+                    # The key changed while we were computing; back off with
+                    # jitter and retry so concurrent writers do not spin.
+                    time.sleep(random.uniform(0, _CAS_BACKOFF_BASE * (2**attempt)))
                     continue
-        raise ProcessingError("concurrent modification of restoration state")
+        # Exhausted retries under contention: signal the client to retry later
+        # (429 with Retry-After) instead of failing with a 500.
+        raise ServiceOverloadedError(
+            "concurrent modification of restoration state",
+            retry_after=1,
+        )
