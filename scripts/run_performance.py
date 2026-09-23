@@ -98,6 +98,8 @@ class StepResult:
     memory_mb: float | None
     peak_cpu_percent: float | None
     peak_memory_mb: float | None
+    connections_measured: bool
+    observed_peak_connections: float | None
     locust_exit_code: int
     passed: bool
     violations: list[str] = field(default_factory=list)
@@ -156,7 +158,8 @@ def run_parameters(argv: list[str] | None = None) -> dict[str, object]:
             continue
         if arg in ("--profile", "--scenario", "--targets", "--duration",
                    "--max-users", "--rps-per-user", "--spawn-rate",
-                   "--required-concurrent-users", "--min-peak-ratio",
+                   "--required-concurrent-users", "--required-concurrent-connections",
+                   "--min-peak-ratio",
                    "--max-error-rate", "--max-p95-ms", "--max-p99-ms",
                    "--min-achieved-ratio", "--max-incomplete-ratio") and i + 1 < len(argv):
             params[arg.lstrip("-").replace("-", "_")] = argv[i + 1]
@@ -416,6 +419,86 @@ def check_health(host: str, timeout_seconds: float = 5.0) -> None:
         raise RuntimeError(f"readiness check failed for {url}: {exc}") from exc
 
 
+def _parse_host_port(host: str) -> tuple[str, int] | None:
+    """Extract ``(host, port)`` from a base URL like ``http://localhost:8000``.
+
+    Returns ``None`` when the port cannot be determined (e.g. a non-http scheme
+    or a missing port). Used to scope connection sampling to the target server.
+    """
+    if "://" not in host:
+        return None
+    scheme, _, rest = host.partition("://")
+    if "@" in rest:
+        rest = rest.rsplit("@", 1)[1]
+    # Drop path/query/fragment.
+    for sep in ("/", "?", "#"):
+        if sep in rest:
+            rest = rest.split(sep, 1)[0]
+    if ":" in rest:
+        hostname, _, port_str = rest.rpartition(":")
+        if not hostname:
+            return None
+        try:
+            port = int(port_str)
+        except ValueError:
+            return None
+        return hostname, port
+    # Default ports for common schemes.
+    default_port = {"http": 80, "https": 443}.get(scheme)
+    if default_port is None:
+        return None
+    return rest, default_port
+
+
+def _sample_connections(
+    pid: int,
+    stop: threading.Event,
+    target: tuple[str, int] | None,
+    samples: list[int | None],
+) -> bool:
+    """Sample ESTABLISHED TCP connections of ``pid`` to ``target`` until stop.
+
+    Only the Locust child process's own connections are counted (via
+    ``psutil.Process(pid).net_connections()``), never the whole system. Each
+    sample is the number of ESTABLISHED connections to ``target``, or ``None``
+    when the count could not be determined (psutil missing, PermissionError,
+    NoSuchProcess, or target unknown). Returns ``True`` if at least one numeric
+    sample was recorded.
+    """
+    if target is None:
+        return False
+    try:
+        import psutil
+    except ImportError:
+        return False
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return False
+    target_host, target_port = target
+    while not stop.is_set():
+        try:
+            conns = proc.net_connections(kind="tcp")
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            samples.append(None)
+            stop.wait(1.0)
+            continue
+        count = 0
+        for conn in conns:
+            if conn.status != "ESTABLISHED":
+                continue
+            raddr = conn.raddr
+            if raddr is None:
+                continue
+            if raddr.port == target_port and (
+                raddr.ip == target_host or raddr.ip in ("127.0.0.1", "::1")
+            ):
+                count += 1
+        samples.append(count)
+        stop.wait(1.0)
+    return any(s is not None for s in samples)
+
+
 def _sample_process(pid: int, stop: threading.Event, samples: list[tuple[float, float]]) -> bool:
     """Sample CPU% and RSS (MB) of a process until ``stop`` is set.
 
@@ -584,6 +667,20 @@ def _docker_peak(samples: list[dict[str, object]]) -> dict[str, object]:
     return result
 
 
+def _connection_peak(samples: list[int | None]) -> tuple[bool, float | None]:
+    """Reduce connection samples to (measured, peak).
+
+    ``measured`` is True when at least one numeric sample was recorded. ``peak``
+    is the maximum numeric sample, or ``None`` when nothing could be measured
+    (psutil missing, PermissionError, NoSuchProcess, or target unknown). A
+    ``None`` sample is never treated as a false zero.
+    """
+    numeric = [s for s in samples if s is not None]
+    if not numeric:
+        return False, None
+    return True, float(max(numeric))
+
+
 def _finalize_docker_samples(
     docker_sampler: threading.Thread,
     stop: threading.Event,
@@ -612,7 +709,7 @@ def run_step(
     duration_seconds: int,
     scenario: str,
     output_dir: Path,
-) -> tuple[int, float, float, float, float, bool, bool, dict[str, object]]:
+) -> tuple[int, float, float, float, float, bool, bool, dict[str, object], bool, float | None]:
     output_dir.mkdir(parents=True, exist_ok=True)
     reset_step_outputs(output_dir)
     csv_prefix = output_dir / "stats"
@@ -659,6 +756,7 @@ def run_step(
     stop = threading.Event()
     samples: list[tuple[float, float]] = []
     docker_samples: list[dict[str, object]] = []
+    conn_samples: list[int | None] = []
     process = subprocess.Popen(command, env=environment)
     sampler = threading.Thread(
         target=_sample_process, args=(process.pid, stop, samples), daemon=True
@@ -668,18 +766,26 @@ def run_step(
         target=_sample_docker, args=(stop, docker_samples), daemon=True
     )
     docker_sampler.start()
+    conn_sampler = threading.Thread(
+        target=_sample_connections,
+        args=(process.pid, stop, _parse_host_port(host), conn_samples),
+        daemon=True,
+    )
+    conn_sampler.start()
     try:
         returncode = process.wait()
     finally:
         stop.set()
         sampler.join(timeout=2.0)
         _finalize_docker_samples(docker_sampler, stop, docker_samples)
+        conn_sampler.join(timeout=2.0)
     measured = bool(samples)
     avg_cpu = sum(s[0] for s in samples) / len(samples) if samples else 0.0
     avg_mem = sum(s[1] for s in samples) / len(samples) if samples else 0.0
     peak_cpu = max((s[0] for s in samples), default=0.0)
     peak_mem = max((s[1] for s in samples), default=0.0)
     docker_peak = _docker_peak(docker_samples)
+    conn_measured, conn_peak = _connection_peak(conn_samples)
     return (
         returncode,
         avg_cpu,
@@ -689,6 +795,8 @@ def run_step(
         measured,
         measured,
         docker_peak,
+        conn_measured,
+        conn_peak,
     )
 
 
@@ -699,14 +807,15 @@ def run_organizer_profile(
     max_users: int,
     output_dir: Path,
     required_concurrent_users: int = 0,
-) -> tuple[int, float, float, float, float, bool, bool, dict[str, object]]:
+) -> tuple[int, float, float, float, float, bool, bool, dict[str, object], bool, float | None]:
     """Run the single continuous organizer profile and return process stats.
 
     The Locust process is started once; the LoadTestShape in the locustfile
     drives the user count and the dynamic wait_time paces each user so the
     target RPS follows the organizer profile over 480s. Returns the same tuple
     shape as ``run_step`` (exit code, avg CPU, avg RAM, peak CPU, peak RAM,
-    cpu measured, mem measured, docker peak).
+    cpu measured, mem measured, docker peak, connections measured, peak
+    connections).
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     reset_step_outputs(output_dir)
@@ -750,6 +859,7 @@ def run_organizer_profile(
     stop = threading.Event()
     samples: list[tuple[float, float]] = []
     docker_samples: list[dict[str, object]] = []
+    conn_samples: list[int | None] = []
     process = subprocess.Popen(command, env=environment)
     sampler = threading.Thread(
         target=_sample_process, args=(process.pid, stop, samples), daemon=True
@@ -759,18 +869,26 @@ def run_organizer_profile(
         target=_sample_docker, args=(stop, docker_samples), daemon=True
     )
     docker_sampler.start()
+    conn_sampler = threading.Thread(
+        target=_sample_connections,
+        args=(process.pid, stop, _parse_host_port(host), conn_samples),
+        daemon=True,
+    )
+    conn_sampler.start()
     try:
         returncode = process.wait()
     finally:
         stop.set()
         sampler.join(timeout=2.0)
         _finalize_docker_samples(docker_sampler, stop, docker_samples)
+        conn_sampler.join(timeout=2.0)
     measured = bool(samples)
     avg_cpu = sum(s[0] for s in samples) / len(samples) if samples else 0.0
     avg_mem = sum(s[1] for s in samples) / len(samples) if samples else 0.0
     peak_cpu = max((s[0] for s in samples), default=0.0)
     peak_mem = max((s[1] for s in samples), default=0.0)
     docker_peak = _docker_peak(docker_samples)
+    conn_measured, conn_peak = _connection_peak(conn_samples)
     return (
         returncode,
         avg_cpu,
@@ -780,6 +898,8 @@ def run_organizer_profile(
         measured,
         measured,
         docker_peak,
+        conn_measured,
+        conn_peak,
     )
 
 
@@ -912,6 +1032,9 @@ def build_result(
     peak_memory_mb: float | None = None,
     cpu_measured: bool = False,
     memory_measured: bool = False,
+    connections_measured: bool = False,
+    observed_peak_connections: float | None = None,
+    required_concurrent_connections: int = 0,
     min_duration_for_stable: int = 30,
     observed_max_users: float = 0.0,
     observed_peak_rps: float = 0.0,
@@ -1043,6 +1166,21 @@ def build_result(
             f"observed peak RPS {observed_peak_rps:.1f} < "
             f"target peak {target_peak_rps:.0f} * {min_peak_ratio:.2f}"
         )
+    # Required concurrent connections gate: the observed peak number of
+    # ESTABLISHED TCP connections from the Locust process to the target must
+    # reach the required value. If connections could not be measured, the gate
+    # cannot pass (it is not a false zero).
+    if required_concurrent_connections:
+        if not connections_measured or observed_peak_connections is None:
+            violations.append(
+                "required concurrent connections gate cannot be verified: "
+                "connection sampling unavailable"
+            )
+        elif observed_peak_connections < required_concurrent_connections:
+            violations.append(
+                f"observed peak connections {observed_peak_connections:.0f} < "
+                f"required {required_concurrent_connections}"
+            )
     if duration_seconds < min_duration_for_stable:
         violations.append(
             f"duration {duration_seconds}s < {min_duration_for_stable}s: "
@@ -1084,6 +1222,8 @@ def build_result(
         memory_mb=memory_mb,
         peak_cpu_percent=peak_cpu_percent,
         peak_memory_mb=peak_memory_mb,
+        connections_measured=connections_measured,
+        observed_peak_connections=observed_peak_connections,
         locust_exit_code=locust_exit_code,
         passed=not violations,
         violations=violations,
@@ -1112,9 +1252,9 @@ def write_reports(
         "",
         "| Target RPS | Actual RPS | Ratio | avg | p50 | p95 | p99 | "
         "MASK | DEMASK | Incomplete | 2xx | 429 | 422 | other | func-err | t-err | "
-        "CPU% | RAM MB | peak CPU% | peak RAM MB | dur | Errors | Result |",
+        "CPU% | RAM MB | peak CPU% | peak RAM MB | peak conn | dur | Errors | Result |",
         "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
-        "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |",
+        "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |",
     ]
     for result in results:
         status = "PASS" if result.passed else "FAIL: " + "; ".join(result.violations)
@@ -1126,6 +1266,11 @@ def write_reports(
         peak_mem = (
             f"{result.peak_memory_mb:.1f}" if result.peak_memory_mb is not None else "n/a"
         )
+        peak_conn = (
+            f"{result.observed_peak_connections:.0f}"
+            if result.observed_peak_connections is not None
+            else "n/a"
+        )
         lines.append(
             f"| {result.target_rps:.0f} | {result.achieved_rps:.1f} | "
             f"{result.achieved_ratio:.2f} | {result.avg_ms:.1f} ms | "
@@ -1134,7 +1279,7 @@ def write_reports(
             f"{result.incomplete_roundtrips} | {result.http_2xx} | "
             f"{result.http_429} | {result.http_422} | {result.http_other} | "
             f"{result.functional_errors} | {result.transport_errors} | "
-            f"{cpu} | {mem} | {peak_cpu} | {peak_mem} | "
+            f"{cpu} | {mem} | {peak_cpu} | {peak_mem} | {peak_conn} | "
             f"{result.duration_seconds}s | "
             f"{result.error_rate_percent:.2f}% | {status} |"
         )
@@ -1144,13 +1289,19 @@ def write_reports(
     lines.append("")
     lines.append(
         "| configured_max_users | observed_max_users | target_peak_rps | "
-        "observed_peak_rps |"
+        "observed_peak_rps | observed_peak_connections |"
     )
-    lines.append("| ---: | ---: | ---: | ---: |")
+    lines.append("| ---: | ---: | ---: | ---: | ---: |")
     for result in results:
+        peak_conn = (
+            f"{result.observed_peak_connections:.0f}"
+            if result.observed_peak_connections is not None
+            else "n/a"
+        )
         lines.append(
             f"| {result.users} | {result.observed_max_users:.0f} | "
-            f"{result.target_peak_rps:.0f} | {result.observed_peak_rps:.1f} |"
+            f"{result.target_peak_rps:.0f} | {result.observed_peak_rps:.1f} | "
+            f"{peak_conn} |"
         )
     (output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -1178,6 +1329,14 @@ def main() -> int:
     parser.add_argument("--max-p99-ms", type=float, default=500.0)
     parser.add_argument("--min-achieved-ratio", type=float, default=0.9)
     parser.add_argument("--required-concurrent-users", type=int, default=0)
+    parser.add_argument(
+        "--required-concurrent-connections",
+        type=int,
+        default=0,
+        help="Gate on the observed peak number of ESTABLISHED TCP connections "
+        "from the Locust process to the target host:port. If connection "
+        "sampling is unavailable, the gate cannot pass.",
+    )
     parser.add_argument("--min-peak-ratio", type=float, default=0.0)
     parser.add_argument("--max-incomplete-ratio", type=float, default=0.01)
     parser.add_argument(
@@ -1202,6 +1361,8 @@ def main() -> int:
         parser.error("max-users must be positive")
     if args.required_concurrent_users < 0:
         parser.error("required-concurrent-users must be non-negative")
+    if args.required_concurrent_connections < 0:
+        parser.error("required-concurrent-connections must be non-negative")
     if not 0 <= args.min_peak_ratio <= 1:
         parser.error("min-peak-ratio must be in [0, 1]")
     if not 0 <= args.max_incomplete_ratio <= 1:
@@ -1239,6 +1400,8 @@ def main() -> int:
             cpu_measured,
             mem_measured,
             docker_peak,
+            conn_measured,
+            conn_peak,
         ) = run_step(
             args.host,
             target,
@@ -1280,6 +1443,9 @@ def main() -> int:
             observed_peak_rps=observed_peak_rps,
             target_peak_rps=target,
             required_concurrent_users=args.required_concurrent_users,
+            connections_measured=conn_measured,
+            observed_peak_connections=conn_peak,
+            required_concurrent_connections=args.required_concurrent_connections,
             min_peak_ratio=args.min_peak_ratio,
             max_incomplete_ratio=args.max_incomplete_ratio,
         )
@@ -1299,15 +1465,24 @@ def _run_organizer(args: argparse.Namespace) -> int:
         f"duration={ORGANIZER_DURATION}s target_average={ORGANIZER_TARGET_AVERAGE:.4f} "
         f"max_users={args.max_users} rps_per_user={args.rps_per_user}"
     )
-    exit_code, avg_cpu, avg_mem, peak_cpu, peak_mem, cpu_measured, mem_measured, docker_peak = (
-        run_organizer_profile(
-            args.host,
-            args.scenario,
-            args.rps_per_user,
-            args.max_users,
-            args.output_dir,
-            args.required_concurrent_users,
-        )
+    (
+        exit_code,
+        avg_cpu,
+        avg_mem,
+        peak_cpu,
+        peak_mem,
+        cpu_measured,
+        mem_measured,
+        docker_peak,
+        conn_measured,
+        conn_peak,
+    ) = run_organizer_profile(
+        args.host,
+        args.scenario,
+        args.rps_per_user,
+        args.max_users,
+        args.output_dir,
+        args.required_concurrent_users,
     )
     try:
         aggregate = read_authoritative_aggregate(args.output_dir)
@@ -1341,6 +1516,9 @@ def _run_organizer(args: argparse.Namespace) -> int:
         observed_peak_rps=observed_peak_rps,
         target_peak_rps=1000.0,
         required_concurrent_users=args.required_concurrent_users,
+        connections_measured=conn_measured,
+        observed_peak_connections=conn_peak,
+        required_concurrent_connections=args.required_concurrent_connections,
         min_peak_ratio=args.min_peak_ratio,
         max_incomplete_ratio=args.max_incomplete_ratio,
     )
@@ -1353,6 +1531,7 @@ def _run_organizer(args: argparse.Namespace) -> int:
         "configured_max_users": args.max_users,
         "observed_max_users": observed_max_users,
         "observed_peak_rps": observed_peak_rps,
+        "observed_peak_connections": conn_peak,
         "rps_per_user": args.rps_per_user,
         "phases": list(ORGANIZER_PHASES),
         "actual_average_rps": result.achieved_rps,

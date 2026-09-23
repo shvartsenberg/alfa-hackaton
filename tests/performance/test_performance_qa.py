@@ -24,9 +24,12 @@ from scripts.run_performance import (
     ORGANIZER_DURATION,
     ORGANIZER_TARGET_AVERAGE,
     _apply_server_config,
+    _connection_peak,
     _container_id_matches,
     _docker_peak,
     _finalize_docker_samples,
+    _parse_host_port,
+    _sample_connections,
     build_result,
     check_health,
     collect_environment,
@@ -1957,3 +1960,194 @@ def test_collect_stage_timings_uses_observed_max_gauge(monkeypatch) -> None:  # 
     # histogram bucket bound (10).
     assert prepare["max_seconds"] == 0.012
     assert prepare["scope"] == "responding_worker_only"
+
+
+# --- ESTABLISHED TCP connection sampling (Locust process only) -------------
+
+
+def test_parse_host_port_extracts_host_and_port() -> None:
+    assert _parse_host_port("http://localhost:8000") == ("localhost", 8000)
+    assert _parse_host_port("http://127.0.0.1:18099") == ("127.0.0.1", 18099)
+    # Default port for http when omitted.
+    assert _parse_host_port("http://example.com") == ("example.com", 80)
+    # A URL with an explicit port is extracted regardless of scheme.
+    assert _parse_host_port("redis://localhost:6379") == ("localhost", 6379)
+    # Malformed input returns None.
+    assert _parse_host_port("not a url") is None
+
+
+def test_connection_peak_returns_measured_and_peak() -> None:
+    measured, peak = _connection_peak([1, 5, 3, 2])
+    assert measured is True
+    assert peak == 5.0
+
+
+def test_connection_peak_unavailable_when_no_numeric_samples() -> None:
+    # None samples (psutil missing / PermissionError / NoSuchProcess) must not
+    # be treated as a false zero.
+    measured, peak = _connection_peak([None, None])
+    assert measured is False
+    assert peak is None
+    measured, peak = _connection_peak([])
+    assert measured is False
+    assert peak is None
+
+
+def test_connection_peak_ignores_none_but_uses_numeric() -> None:
+    measured, peak = _connection_peak([None, 4, None, 7])
+    assert measured is True
+    assert peak == 7.0
+
+
+def test_sample_connections_counts_only_established_to_target(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    import threading
+    import time
+
+    class _Conn:
+        def __init__(self, status, ip, port):
+            self.status = status
+            self.raddr = type("R", (), {"ip": ip, "port": port})()
+
+    class _FakeProc:
+        def net_connections(self, kind="tcp"):
+            return [
+                _Conn("ESTABLISHED", "127.0.0.1", 8000),
+                _Conn("ESTABLISHED", "127.0.0.1", 8000),
+                _Conn("ESTABLISHED", "127.0.0.1", 9999),  # wrong port
+                _Conn("TIME_WAIT", "127.0.0.1", 8000),  # not established
+                _Conn("ESTABLISHED", "10.0.0.5", 8000),  # wrong host
+            ]
+
+    monkeypatch.setattr("psutil.Process", lambda pid: _FakeProc())
+    stop = threading.Event()
+    samples: list[int | None] = []
+    thread = threading.Thread(
+        target=_sample_connections,
+        args=(123, stop, ("127.0.0.1", 8000), samples),
+        daemon=True,
+    )
+    thread.start()
+    time.sleep(0.2)
+    stop.set()
+    thread.join(timeout=2.0)
+    # Only the two ESTABLISHED connections to 127.0.0.1:8000 are counted.
+    assert samples == [2]
+
+
+def test_sample_connections_records_none_on_access_denied(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    import threading
+    import time
+
+    class _FakeProc:
+        def net_connections(self, kind="tcp"):
+            raise PermissionError("access denied")
+
+    monkeypatch.setattr("psutil.Process", lambda pid: _FakeProc())
+    stop = threading.Event()
+    samples: list[int | None] = []
+    thread = threading.Thread(
+        target=_sample_connections,
+        args=(123, stop, ("127.0.0.1", 8000), samples),
+        daemon=True,
+    )
+    thread.start()
+    time.sleep(0.2)
+    stop.set()
+    thread.join(timeout=2.0)
+    # PermissionError must be recorded as None (unavailable), not a false zero.
+    assert samples == [None]
+
+
+def test_sample_connections_unavailable_when_target_unknown() -> None:
+    import threading
+
+    stop = threading.Event()
+    samples: list[int | None] = []
+    _sample_connections(123, stop, None, samples)
+    assert samples == []
+
+
+def test_build_result_connection_gate_fails_when_unavailable() -> None:
+    result = build_result(
+        _row(),
+        target_rps=100,
+        users=200,
+        duration_seconds=60,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics=_roundtrip_custom(),
+        connections_measured=False,
+        observed_peak_connections=None,
+        required_concurrent_connections=200,
+    )
+    assert result.passed is False
+    assert any("connection sampling unavailable" in v for v in result.violations)
+
+
+def test_build_result_connection_gate_fails_below_required() -> None:
+    result = build_result(
+        _row(),
+        target_rps=100,
+        users=200,
+        duration_seconds=60,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics=_roundtrip_custom(),
+        connections_measured=True,
+        observed_peak_connections=150.0,
+        required_concurrent_connections=200,
+    )
+    assert result.passed is False
+    assert any("observed peak connections" in v for v in result.violations)
+
+
+def test_build_result_connection_gate_passes_when_reached() -> None:
+    result = build_result(
+        _row(),
+        target_rps=100,
+        users=200,
+        duration_seconds=60,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics=_roundtrip_custom(),
+        connections_measured=True,
+        observed_peak_connections=200.0,
+        required_concurrent_connections=200,
+    )
+    assert result.passed is True
+
+
+def test_build_result_records_connection_fields() -> None:
+    result = build_result(
+        _row(),
+        target_rps=100,
+        users=200,
+        duration_seconds=60,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics=_roundtrip_custom(),
+        connections_measured=True,
+        observed_peak_connections=180.0,
+    )
+    assert result.connections_measured is True
+    assert result.observed_peak_connections == 180.0

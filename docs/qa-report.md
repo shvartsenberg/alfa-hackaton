@@ -197,10 +197,10 @@ The following were executed and passed on this machine:
   types, etc.), none of which are in the files changed here. The test files are
   intentionally excluded from the CI typecheck; this is documented, not claimed
   as passing.
-- `pytest` — **162 passed, 1 skipped, 93 deselected** (default run excludes
+- `pytest` — **162 passed, 1 skipped, 104 deselected** (default run excludes
   `concurrency`/`slow`/`performance`).
 - `pytest -m concurrency` — **9 passed**.
-- `pytest -m performance` — **82 passed** (runs
+- `pytest -m performance` — **93 passed** (runs
   `tests/performance/test_performance_qa.py`, now marked with the `performance`
   marker).
 - `python -m benchmarks.score` — OK after merging `main`: overall F1 0.995,
@@ -464,8 +464,10 @@ artifacts are gitignored and excluded from the submission ZIP.
 - **No full 480s Redis run under the new schema.** Docker is not installed on
   this machine, so a real Redis/multiworker organizer run cannot be executed
   here. The new reporting schema (peak CPU/RAM, during-run Docker sampling,
-  honest `server_configuration`, observed stage `max_seconds`) is **not yet
-  verified by a full production run**. No 1000 RPS result is claimed.
+  ESTABLISHED TCP connection sampling, honest `server_configuration`, observed
+  stage `max_seconds`) is **not yet verified by a full production run**. No 1000
+  RPS result is claimed. The exact commands for the user to run the real 480s
+  Redis organizer profile are in `docs/server-load-run.md`.
 - **Memory smoke.** A short local memory-store smoke of the new schema is run
   via `scripts/run_performance.py --profile steps --targets 5 --duration 5`
   against a local in-memory server; it is explicitly a **memory smoke**, not a
@@ -477,6 +479,7 @@ artifacts are gitignored and excluded from the submission ZIP.
 - **What is proven by the memory smoke:** the harness, counter reconciliation,
   and the new peak CPU/RAM fields in the results. **What is covered only by unit
   tests (not a live run):** the stage `max_seconds` gauge, Docker sampling with
-  container-ID binding, and the `organizer` profile metadata. **What is not
-  proven:** 1000 RPS, 200 concurrent users as HTTP connections, and the
-  Redis/multiworker production profile under the new schema.
+  container-ID binding, ESTABLISHED TCP connection sampling, and the `organizer`
+  profile metadata. **What is not proven:** 1000 RPS, 200 concurrent users as
+  HTTP connections, and the Redis/multiworker production profile under the new
+  schema.
