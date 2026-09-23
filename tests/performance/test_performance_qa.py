@@ -1176,6 +1176,181 @@ def test_organizer_dynamic_rate_propagates() -> None:
     assert rate == locustfile.TASKS_PER_USER_SECOND
 
 
+# --- organizer scheduler (integral/token pacing) ----------------------------
+
+
+def test_cumulative_tasks_is_monotone_and_matches_total() -> None:
+    # The cumulative task integral must be monotone non-decreasing and reach the
+    # analytic total at ORGANIZER_DURATION.
+    prev = -1.0
+    for t in (0, 1, 90, 180, 300, 330, 360, 480):
+        val = locustfile._cumulative_tasks(t)
+        assert val >= prev
+        prev = val
+    total = locustfile._cumulative_tasks(locustfile.ORGANIZER_DURATION)
+    assert total > 0
+    # The integral of target_rps_at / REQUESTS_PER_TASK over [0,480] must equal
+    # the analytic average * duration / REQUESTS_PER_TASK.
+    expected = (
+        locustfile.ORGANIZER_TARGET_AVERAGE
+        * locustfile.ORGANIZER_DURATION
+        / locustfile.REQUESTS_PER_TASK[locustfile.SCENARIO]
+    )
+    assert total == pytest.approx(expected, rel=1e-6)
+
+
+def test_scheduler_first_slot_is_after_zero_and_tasks_continue() -> None:
+    # Regression: the old constant_throughput pacing parked users for ~1000s at
+    # t=0 (rate clamped to 0.001). The integral scheduler must schedule the first
+    # task strictly after t=0 and continue scheduling many tasks across the run.
+    first = locustfile._scheduled_time_for_ordinal(1)
+    assert first > 0.0
+    second = locustfile._scheduled_time_for_ordinal(2)
+    assert second > first
+    # 200 users' first tasks must spread over the ramp, not burst at t=0.
+    slot_200 = locustfile._scheduled_time_for_ordinal(200)
+    assert slot_200 > first
+    # A late slot must be scheduled well into the run (sustained load).
+    late = locustfile._scheduled_time_for_ordinal(10000)
+    assert late > 100.0
+    # The last slot is at (or very near) the end of the profile.
+    total = locustfile._cumulative_tasks(locustfile.ORGANIZER_DURATION)
+    last = locustfile._scheduled_time_for_ordinal(total)
+    assert last == pytest.approx(locustfile.ORGANIZER_DURATION, abs=1.0)
+
+
+def test_scheduler_reset_restores_ordinal() -> None:
+    # _reset_scheduler must restore the next ordinal to 1 so a rerun does not
+    # continue from a stale counter.
+    locustfile._SCHED_NEXT_ORDINAL = 500
+    locustfile._reset_scheduler()
+    assert locustfile._SCHED_NEXT_ORDINAL == 1
+    assert locustfile._SCHED_TOTAL_SLOTS > 0
+
+
+# --- authoritative achieved RPS (not Locust aggregate) ----------------------
+
+
+def test_build_result_uses_measured_duration_for_achieved_rps() -> None:
+    # Regression: the failed 480s run processed 400 requests but Locust's
+    # aggregate "Requests/s" reported ~904 because it divides over the
+    # request-active span. The authoritative achieved RPS must be
+    # requests / measured wall duration.
+    row = {
+        "Request Count": "400",
+        "Failure Count": "0",
+        "Requests/s": "904",  # misleading Locust aggregate
+        "50%": "350",
+        "95%": "350",
+        "99%": "350",
+    }
+    result = build_result(
+        row,
+        target_rps=330.9375,
+        users=200,
+        duration_seconds=480,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics={
+            "http_2xx": 400,
+            "http_429": 0,
+            "http_422": 0,
+            "http_other": 0,
+            "transport_errors": 0,
+            "mask_requests": 200,
+            "demask_requests": 200,
+            "incomplete_roundtrips": 0,
+            "functional_errors": 0,
+        },
+        measured_duration=480.0,
+    )
+    # 400 requests / 480s = 0.833 RPS, NOT the misleading 904.
+    assert result.achieved_rps == pytest.approx(400.0 / 480.0, rel=1e-6)
+    assert result.passed is False
+
+
+def test_build_result_elapsed_duration_gate_fails_when_too_short() -> None:
+    row = {
+        "Request Count": "400",
+        "Failure Count": "0",
+        "Requests/s": "904",
+        "50%": "350",
+        "95%": "350",
+        "99%": "350",
+    }
+    result = build_result(
+        row,
+        target_rps=330.9375,
+        users=200,
+        duration_seconds=480,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics={
+            "http_2xx": 400,
+            "http_429": 0,
+            "http_422": 0,
+            "http_other": 0,
+            "transport_errors": 0,
+            "mask_requests": 200,
+            "demask_requests": 200,
+            "incomplete_roundtrips": 0,
+            "functional_errors": 0,
+        },
+        measured_duration=480.0,
+        min_elapsed_duration=475.0,
+    )
+    # 480s >= 475s, so the elapsed gate passes; the FAIL comes from the low
+    # achieved RPS ratio.
+    assert not any("measured elapsed" in v for v in result.violations)
+    assert result.passed is False
+
+
+def test_build_result_elapsed_duration_gate_fails_when_short_run() -> None:
+    row = {
+        "Request Count": "400",
+        "Failure Count": "0",
+        "Requests/s": "904",
+        "50%": "350",
+        "95%": "350",
+        "99%": "350",
+    }
+    result = build_result(
+        row,
+        target_rps=330.9375,
+        users=200,
+        duration_seconds=480,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics={
+            "http_2xx": 400,
+            "http_429": 0,
+            "http_422": 0,
+            "http_other": 0,
+            "transport_errors": 0,
+            "mask_requests": 200,
+            "demask_requests": 200,
+            "incomplete_roundtrips": 0,
+            "functional_errors": 0,
+        },
+        measured_duration=100.0,
+        min_elapsed_duration=475.0,
+    )
+    assert any("measured elapsed" in v for v in result.violations)
+    assert result.passed is False
+
+
 # --- organizer custom-metrics metadata (defect 3) ---------------------------
 
 

@@ -158,6 +158,52 @@ ORGANIZER_PHASES = (
 
 _ORGANIZER_SHAPE: OrganizerShape | None = None
 
+# Process-wide task scheduler for organizer mode. A single locked counter
+# reserves the next task ordinal; each user sleeps until its scheduled time so
+# the aggregate request rate follows the target profile. This replaces the
+# post-task constant_throughput pacing, which parked users for ~1000s at t=0.
+_SCHED_LOCK = threading.Lock()
+_SCHED_NEXT_ORDINAL = 1  # 1-based: slot 1 is the first task after t=0.
+_SCHED_TOTAL_SLOTS = 0.0  # total task slots over the whole profile.
+
+
+def _reset_scheduler() -> None:
+    """Reset the process-wide scheduler state (used between runs/tests)."""
+    global _SCHED_NEXT_ORDINAL, _SCHED_TOTAL_SLOTS
+    with _SCHED_LOCK:
+        _SCHED_NEXT_ORDINAL = 1
+        _SCHED_TOTAL_SLOTS = _cumulative_tasks(ORGANIZER_DURATION)
+
+
+def _organizer_pace() -> bool:
+    """Reserve the next task slot and sleep until its scheduled time.
+
+    Returns ``True`` when the task should run, ``False`` when all slots are
+    reserved (the run is effectively over) and the caller should skip execution
+    and wait for stop. Uses ``gevent.sleep`` so the greenlet yields while
+    waiting; the scheduler, not ``wait_time``, controls throughput.
+    """
+    import gevent
+
+    global _SCHED_NEXT_ORDINAL
+    with _SCHED_LOCK:
+        ordinal = _SCHED_NEXT_ORDINAL
+        _SCHED_NEXT_ORDINAL += 1
+    if ordinal > _SCHED_TOTAL_SLOTS:
+        # All slots reserved; wait until the run is stopped.
+        while (
+            _ORGANIZER_SHAPE is not None
+            and _ORGANIZER_SHAPE.get_run_time() < ORGANIZER_DURATION
+        ):
+            gevent.sleep(1.0)
+        return False
+    scheduled = _scheduled_time_for_ordinal(ordinal)
+    now = _ORGANIZER_SHAPE.get_run_time() if _ORGANIZER_SHAPE is not None else 0.0
+    delay = scheduled - now
+    if delay > 0:
+        gevent.sleep(delay)
+    return True
+
 
 def target_rps_at(t: float) -> float:
     """Return the organizer target RPS at elapsed time ``t`` (seconds)."""
@@ -174,6 +220,67 @@ def target_rps_at(t: float) -> float:
     if t < 480:
         return 330.0
     return 0.0
+
+
+def _cumulative_tasks(t: float) -> float:
+    """Cumulative number of task slots scheduled by elapsed time ``t``.
+
+    This is the integral of ``target_rps_at(s) / REQUESTS_PER_TASK[SCENARIO]``
+    over ``[0, t]``. The profile is piecewise linear, so the integral is
+    computed analytically per segment. It is monotone non-decreasing in ``t``,
+    which lets us invert it to schedule task times.
+    """
+    if t <= 0:
+        return 0.0
+    t = min(t, ORGANIZER_DURATION)
+    per_task = REQUESTS_PER_TASK[SCENARIO]
+    total = 0.0
+    # Segment [0, 180): ramp 0 -> 330 (triangle).
+    seg_end = min(t, 180.0)
+    if seg_end > 0:
+        # integral of (330*s/180) ds = 330/180 * s^2/2
+        total += (330.0 / 180.0) * (seg_end * seg_end) / 2.0
+    if t <= 180:
+        return total / per_task
+    # Segment [180, 300): steady 330.
+    seg_end = min(t, 300.0)
+    total += 330.0 * (seg_end - 180.0)
+    if t <= 300:
+        return total / per_task
+    # Segment [300, 330): peak 1000.
+    seg_end = min(t, 330.0)
+    total += 1000.0 * (seg_end - 300.0)
+    if t <= 330:
+        return total / per_task
+    # Segment [330, 360): decay 1000 -> 330 (trapezoid).
+    seg_end = min(t, 360.0)
+    # linear from 1000 at 330 to 330 at 360; average over the covered span.
+    frac = (seg_end - 330.0) / 30.0
+    total += (1000.0 + (1000.0 - 670.0 * frac)) * (seg_end - 330.0) / 2.0
+    if t <= 360:
+        return total / per_task
+    # Segment [360, 480): steady 330.
+    total += 330.0 * (t - 360.0)
+    return total / per_task
+
+
+def _scheduled_time_for_ordinal(n: float) -> float:
+    """Return the elapsed time at which the ``n``-th task slot is scheduled.
+
+    Inverts ``_cumulative_tasks`` via binary search over ``[0, ORGANIZER_DURATION]``.
+    The first slot (``n=1``) is scheduled strictly after ``t=0``, so the 200
+    users' first tasks spread over the ramp rather than bursting at once.
+    """
+    if n <= 0:
+        return 0.0
+    lo, hi = 0.0, float(ORGANIZER_DURATION)
+    for _ in range(60):
+        mid = (lo + hi) / 2.0
+        if _cumulative_tasks(mid) < n:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
 
 
 def _organizer_user_count(target: float) -> int:
@@ -245,6 +352,13 @@ _CUSTOM_METRICS: dict[str, int] = {
 def _bump(key: str, amount: int = 1) -> None:
     with _METRICS_LOCK:
         _CUSTOM_METRICS[key] += amount
+
+
+@events.test_start.add_listener
+def _reset_organizer_scheduler(environment, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+    """Reset the process-wide organizer scheduler at the start of each run."""
+    if LOAD_PROFILE == "organizer":
+        _reset_scheduler()
 
 
 @events.test_stop.add_listener
@@ -362,7 +476,9 @@ class ProcessUser(FastHttpUser):
     """Generate a bounded-cardinality, correctness-checked workload."""
 
     if LOAD_PROFILE == "organizer":
-        wait_time = _dynamic_wait_time
+        # The scheduler (see _organizer_pace) controls throughput by sleeping
+        # before each task; wait_time is kept at zero so it does not add delay.
+        wait_time = lambda self: 0.0  # noqa: E731
     else:
         wait_time = constant_throughput(max(TASKS_PER_USER_SECOND, 0.001))
 
@@ -555,6 +671,10 @@ class ProcessUser(FastHttpUser):
 
     @task
     def execute_scenario(self) -> None:
+        if LOAD_PROFILE == "organizer" and not _organizer_pace():
+            # Pace before the task: reserve a slot and sleep until its
+            # scheduled time. If all slots are reserved, skip execution.
+            return
         if SCENARIO == "mixed":
             selected = random.choices(
                 (

@@ -197,10 +197,10 @@ The following were executed and passed on this machine:
   types, etc.), none of which are in the files changed here. The test files are
   intentionally excluded from the CI typecheck; this is documented, not claimed
   as passing.
-- `pytest` — **162 passed, 1 skipped, 109 deselected** (default run excludes
+- `pytest` — **162 passed, 1 skipped, 115 deselected** (default run excludes
   `concurrency`/`slow`/`performance`).
 - `pytest -m concurrency` — **9 passed**.
-- `pytest -m performance` — **98 passed** (runs
+- `pytest -m performance` — **104 passed** (runs
   `tests/performance/test_performance_qa.py`, now marked with the `performance`
   marker).
 - `python -m benchmarks.score` — OK after merging `main`: overall F1 0.995,
@@ -483,3 +483,39 @@ artifacts are gitignored and excluded from the submission ZIP.
   profile metadata. **What is not proven:** 1000 RPS, 200 concurrent users as
   HTTP connections, and the Redis/multiworker production profile under the new
   schema.
+
+## Failed 480s server run (invalid as capacity proof)
+
+A real 480s Redis organizer run was executed on the server (16:24:39 → 16:32:40,
+~480s wall). It **failed** and is **not** a valid throughput measurement:
+
+- 200 users were spawned, but only **400 requests** were processed (200 MASK +
+  200 DEMASK = one roundtrip per user).
+- Observed peak RPS **0** and observed peak connections **0**.
+- p95 latency ~350 ms.
+- Locust's aggregate reported ~904 RPS, but that is **misleading**: Locust
+  divides over the request-active span, not the full wall duration. The
+  authoritative achieved RPS is `requests / measured wall duration` =
+  `400 / 480 ≈ 0.83 RPS`.
+
+**Root cause:** the old organizer pacing used `constant_throughput` with a
+per-user rate derived from `target_rps_at(t) / users`. At `t=0` the target is 0,
+so the rate was clamped to `0.001`, which made `constant_throughput` park every
+user for ~1000s after the first task. Hence only one roundtrip per user.
+
+**Fix (implemented):** the organizer now uses a process-wide integral/token
+scheduler. Before each task, a user reserves the next task ordinal and sleeps
+until its scheduled time (the monotone inverse of the cumulative integral of
+`target_rps_at(t)/REQUESTS_PER_TASK`). This produces sustained requests through
+all 480s, follows the ramp/steady/peak/decay profile, caps at 200 users, and
+spreads the 200 users' first tasks over the ramp. The runner now reports the
+authoritative achieved RPS as `requests / measured wall duration` and gates on a
+sufficiently full elapsed duration (≥475s for the real organizer), so a short or
+idle run cannot be misrepresented as throughput.
+
+**Status:** the fix is covered by unit tests (first-slot-after-zero, continued
+tasks, the 400/480 ≈ 0.83 RPS case, elapsed-duration gate) and a short live
+smoke (12s profile, 20 users → 132 requests, sustained beyond the initial
+burst). A **new full 480s Redis run is required** to re-verify capacity; the
+failed run above is **not** proof of throughput. The new code must be pushed and
+pulled on the server before rerunning.

@@ -82,6 +82,7 @@ class StepResult:
     observed_peak_rps: float
     target_peak_rps: float
     duration_seconds: int
+    measured_duration: float | None
     mask_requests: int
     demask_requests: int
     incomplete_roundtrips: int
@@ -844,15 +845,17 @@ def run_organizer_profile(
     max_users: int,
     output_dir: Path,
     required_concurrent_users: int = 0,
-) -> tuple[int, float, float, float, float, bool, bool, dict[str, object], bool, float | None]:
+) -> tuple[
+    int, float, float, float, float, bool, bool, dict[str, object], bool, float | None, float
+]:
     """Run the single continuous organizer profile and return process stats.
 
     The Locust process is started once; the LoadTestShape in the locustfile
-    drives the user count and the dynamic wait_time paces each user so the
-    target RPS follows the organizer profile over 480s. Returns the same tuple
-    shape as ``run_step`` (exit code, avg CPU, avg RAM, peak CPU, peak RAM,
-    cpu measured, mem measured, docker peak, connections measured, peak
-    connections).
+    drives the user count and the scheduler paces each user so the target RPS
+    follows the organizer profile over 480s. Returns the same tuple shape as
+    ``run_step`` (exit code, avg CPU, avg RAM, peak CPU, peak RAM, cpu measured,
+    mem measured, docker peak, connections measured, peak connections) plus the
+    measured wall-clock duration of the subprocess in seconds.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     reset_step_outputs(output_dir)
@@ -897,6 +900,7 @@ def run_organizer_profile(
     samples: list[tuple[float, float]] = []
     docker_samples: list[dict[str, object]] = []
     conn_samples: list[int | None] = []
+    wall_start = time.monotonic()
     process = subprocess.Popen(command, env=environment)
     sampler = threading.Thread(
         target=_sample_process, args=(process.pid, stop, samples), daemon=True
@@ -919,6 +923,7 @@ def run_organizer_profile(
         sampler.join(timeout=2.0)
         _finalize_docker_samples(docker_sampler, stop, docker_samples)
         conn_completed = _finalize_connection_samples(conn_sampler, stop, conn_samples)
+    measured_duration = time.monotonic() - wall_start
     measured = bool(samples)
     avg_cpu = sum(s[0] for s in samples) / len(samples) if samples else 0.0
     avg_mem = sum(s[1] for s in samples) / len(samples) if samples else 0.0
@@ -941,6 +946,7 @@ def run_organizer_profile(
         docker_peak,
         conn_measured,
         conn_peak,
+        measured_duration,
     )
 
 
@@ -1083,12 +1089,21 @@ def build_result(
     required_concurrent_users: int = 0,
     min_peak_ratio: float = 0.0,
     max_incomplete_ratio: float = 0.01,
+    measured_duration: float | None = None,
+    min_elapsed_duration: float = 0.0,
 ) -> StepResult:
     custom_metrics_present = custom_metrics is not None
     custom_metrics = custom_metrics or {}
     requests = int(_number(row, "Request Count"))
     failures = int(_number(row, "Failure Count"))
-    achieved_rps = _number(row, "Requests/s")
+    if measured_duration is not None and measured_duration > 0:
+        # Authoritative achieved RPS: total requests over the measured wall
+        # duration. Locust's aggregate "Requests/s" divides over the
+        # request-active span and can massively overstate throughput when the
+        # run is short or idle, so it is NOT used here.
+        achieved_rps = requests / measured_duration
+    else:
+        achieved_rps = _number(row, "Requests/s")
     error_rate = failures / requests * 100.0 if requests else 100.0
     ratio = achieved_rps / target_rps if target_rps else 0.0
     avg = _number(row, "Average Response Time")
@@ -1227,6 +1242,20 @@ def build_result(
             f"duration {duration_seconds}s < {min_duration_for_stable}s: "
             "percentiles are not stable"
         )
+    # Elapsed-duration gate: the measured wall duration must be long enough for
+    # the achieved RPS to be meaningful. A short or idle run (e.g. the failed
+    # 480s run that only processed 400 requests) must not be reported as a
+    # throughput result.
+    if (
+        min_elapsed_duration
+        and measured_duration is not None
+        and measured_duration < min_elapsed_duration
+    ):
+        violations.append(
+            f"measured elapsed {measured_duration:.1f}s < "
+            f"required {min_elapsed_duration:.1f}s: run too short to be a "
+            "valid throughput measurement"
+        )
     incomplete = custom_metrics.get("incomplete_roundtrips", 0)
     mask_count = custom_metrics.get("mask_requests", 0)
     incomplete_ratio = incomplete / mask_count if mask_count else 0.0
@@ -1246,6 +1275,7 @@ def build_result(
         observed_peak_rps=observed_peak_rps,
         target_peak_rps=target_peak_rps,
         duration_seconds=duration_seconds,
+        measured_duration=measured_duration,
         mask_requests=custom_metrics.get("mask_requests", 0),
         demask_requests=custom_metrics.get("demask_requests", 0),
         incomplete_roundtrips=incomplete,
@@ -1293,7 +1323,7 @@ def write_reports(
         "",
         "| Target RPS | Actual RPS | Ratio | avg | p50 | p95 | p99 | "
         "MASK | DEMASK | Incomplete | 2xx | 429 | 422 | other | func-err | t-err | "
-        "CPU% | RAM MB | peak CPU% | peak RAM MB | peak conn | dur | Errors | Result |",
+        "CPU% | RAM MB | peak CPU% | peak RAM MB | peak conn | dur(meas/cfg) | Errors | Result |",
         "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
         "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |",
     ]
@@ -1312,6 +1342,9 @@ def write_reports(
             if result.observed_peak_connections is not None
             else "n/a"
         )
+        meas_dur = (
+            f"{result.measured_duration:.1f}" if result.measured_duration is not None else "n/a"
+        )
         lines.append(
             f"| {result.target_rps:.0f} | {result.achieved_rps:.1f} | "
             f"{result.achieved_ratio:.2f} | {result.avg_ms:.1f} ms | "
@@ -1321,7 +1354,7 @@ def write_reports(
             f"{result.http_429} | {result.http_422} | {result.http_other} | "
             f"{result.functional_errors} | {result.transport_errors} | "
             f"{cpu} | {mem} | {peak_cpu} | {peak_mem} | {peak_conn} | "
-            f"{result.duration_seconds}s | "
+            f"{meas_dur}/{result.duration_seconds}s | "
             f"{result.error_rate_percent:.2f}% | {status} |"
         )
     # Concurrency / peak summary block.
@@ -1517,6 +1550,7 @@ def _run_organizer(args: argparse.Namespace) -> int:
         docker_peak,
         conn_measured,
         conn_peak,
+        measured_duration,
     ) = run_organizer_profile(
         args.host,
         args.scenario,
@@ -1562,11 +1596,14 @@ def _run_organizer(args: argparse.Namespace) -> int:
         required_concurrent_connections=args.required_concurrent_connections,
         min_peak_ratio=args.min_peak_ratio,
         max_incomplete_ratio=args.max_incomplete_ratio,
+        measured_duration=measured_duration,
+        min_elapsed_duration=475.0,
     )
     environment = _apply_server_config(collect_environment(), args.server_config)
     profile = {
         "name": "organizer",
         "duration_seconds": ORGANIZER_DURATION,
+        "measured_duration_seconds": measured_duration,
         "target_average_rps": ORGANIZER_TARGET_AVERAGE,
         "target_peak_rps": 1000.0,
         "configured_max_users": args.max_users,

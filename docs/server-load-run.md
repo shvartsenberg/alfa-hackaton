@@ -7,9 +7,13 @@ and are never committed to git.
 
 > **Status:** the new reporting schema (peak CPU/RAM, during-run Docker
 > sampling, ESTABLISHED TCP connection sampling, honest `server_configuration`)
-> is **not yet verified by a full production run**. This document prepares that
-> run. Do **not** claim PASS until a real run completes and the report is
-> inspected.
+> is **not yet verified by a full production run**. A previous 480s Redis run
+> **failed** (200 users, only 400 requests, 0 observed peak RPS/connections,
+> p95 ~350ms) and is **not** a valid capacity proof. The organizer pacing was
+> fixed (integral/token scheduler) and the runner now reports authoritative
+> `requests / measured wall duration` with an elapsed-duration gate. **The new
+> code must be pushed and pulled on the server before rerunning.** Do **not**
+> claim PASS until a real run completes and the report is inspected.
 
 ## Prerequisites
 
