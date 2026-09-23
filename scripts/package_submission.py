@@ -41,6 +41,13 @@ REQUIRED_FILES = {
     "pyproject.toml",
     "app/main.py",
     "configs/consumers/default.yaml",
+    "Dockerfile",
+    "docker-compose.yml",
+    ".env.example",
+    "tests/conftest.py",
+    "tests/unit/test_masking.py",
+    "scripts/package_submission.py",
+    "docs/architecture.md",
 }
 NORMALIZED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 
@@ -136,11 +143,27 @@ def build_zip(output_path: Path, root: Path = PROJECT_ROOT) -> None:
     )
 
 
+def _dev_deps_available() -> bool:
+    """Return True when the dev toolchain (pytest) is importable.
+
+    Used to decide whether the optional pytest subset is runnable. A missing
+    dev dependency is an objective, detectable condition; it is the only reason
+    the subset is skipped.
+    """
+    try:
+        import pytest  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def smoke_validate_zip(output_path: Path) -> None:
     """Unpack the archive, install it, and run a minimal smoke test.
 
     Verifies that a clean checkout from the ZIP installs, imports, and serves
-    the /process contract.
+    the /process contract. The core smoke (install/import/MASK/DEMASK) is
+    mandatory. The pytest subset is run when the dev toolchain is available;
+    a real test failure is an error, never silently swallowed.
     """
     validate_zip(output_path)
     with tempfile.TemporaryDirectory() as tmp:
@@ -173,6 +196,39 @@ def smoke_validate_zip(output_path: Path) -> None:
             check=True,
             capture_output=True,
         )
+
+        # Optional pytest subset. It is skipped only when the dev toolchain is
+        # objectively unavailable (pytest not importable). If pytest is present
+        # and the subset fails, that is a real failure and aborts the smoke.
+        if not _dev_deps_available():
+            print("smoke pytest subset skipped: dev toolchain (pytest) not available")
+        else:
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "-e",
+                    ".[dev]",
+                ],
+                cwd=extract_dir,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "tests/integration/test_process.py",
+                    "-q",
+                ],
+                cwd=extract_dir,
+                check=True,
+                capture_output=True,
+            )
+            print("smoke pytest subset: ok")
     print(f"Smoke-validated {output_path.resolve()}")
 
 

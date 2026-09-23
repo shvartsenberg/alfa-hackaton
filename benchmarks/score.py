@@ -29,6 +29,10 @@ from app.detection.regex.detector import RegexDetector  # noqa: E402
 
 _DATASET_PATH = Path(__file__).resolve().parent / "dataset.yaml"
 _F1_THRESHOLD = 0.7
+# Per-type recall floor. A type that appears in the dataset but is never
+# detected (recall == 0.0) must fail the benchmark even if the overall F1 is
+# green, so a mandatory PII type cannot silently regress to zero recall.
+_MIN_RECALL_PER_TYPE = 0.1
 
 
 def _load_dataset() -> list[dict[str, object]]:
@@ -104,6 +108,7 @@ def _main() -> int:
     total_fp = sum(fp.values())
     total_fn = sum(fn.values())
 
+    violations: list[str] = []
     for pii_type in types:
         t = tp[pii_type]
         f = fp[pii_type]
@@ -115,6 +120,10 @@ def _main() -> int:
             f"{pii_type:<22}{t:>4}{f:>4}{n:>4}"
             f"{_fmt_metric(precision):>11}{_fmt_metric(recall):>9}{_fmt_metric(f1):>8}"
         )
+        if t + n > 0 and recall < _MIN_RECALL_PER_TYPE:
+            violations.append(
+                f"{pii_type} recall {recall:.3f} < {_MIN_RECALL_PER_TYPE:.1f}"
+            )
 
     precision = total_tp / (total_tp + total_fp) if total_tp + total_fp else 0.0
     recall = total_tp / (total_tp + total_fn) if total_tp + total_fn else 0.0
@@ -133,7 +142,12 @@ def _main() -> int:
         for case_id, pii_type, value in false_positives:
             print(f"  {case_id}: {pii_type} = {value}")
 
-    return 1 if f1 < _F1_THRESHOLD else 0
+    if violations:
+        print("\nPer-type recall violations:")
+        for violation in violations:
+            print(f"  {violation}")
+
+    return 1 if (f1 < _F1_THRESHOLD or violations) else 0
 
 
 if __name__ == "__main__":

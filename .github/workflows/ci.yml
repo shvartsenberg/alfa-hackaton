@@ -13,6 +13,10 @@ jobs:
         python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Fetch full history so the whitespace check can diff against the
+          # correct base (PR base branch or the previous push commit).
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -36,11 +40,45 @@ jobs:
       - name: Run concurrency tests
         run: pytest -m concurrency
 
-      - name: Run quality benchmark
-        run: python -m benchmarks.score
+      - name: Validate Docker Compose
+        # docker compose config requires MASKING_KEY to be set. Use a safe,
+        # throwaway test value here; it is only used to render the compose file
+        # and is never shipped or used at runtime.
+        env:
+          MASKING_KEY: "test-only-compose-config-key-not-used-at-runtime"
+        run: docker compose config
+
+      - name: Check for whitespace errors
+        # Diff against the correct base so the check covers only this change:
+        # - pull_request: the PR base branch.
+        # - push: the previous commit (github.event.before); for a new branch or
+        #   a zero SHA (first push) fall back to the empty tree so the whole
+        #   commit is checked. No silent || true that would make the gate fake.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            before="${{ github.event.before }}"
+            if [ "$before" = "0000000000000000000000000000000000000000" ] || [ -z "$before" ]; then
+              # Write the empty tree object (-w) so the hash refers to a real,
+              # diffable object; without -w the hash would be dangling.
+              base="$(git hash-object -t tree -w /dev/null)"
+            else
+              base="$before"
+            fi
+          fi
+          git diff --check "$base" HEAD
 
       - name: Validate submission packaging
         run: |
           python scripts/package_submission.py /tmp/submission.zip
           python scripts/package_submission.py --validate /tmp/submission.zip
           python scripts/package_submission.py --smoke /tmp/submission.zip
+
+      - name: Run quality benchmark
+        # NOTE: this step is expected to be RED until the detection owner fixes
+        # PASSPORT_ISSUER recall (see docs/qa-report.md defect #6). It is kept
+        # as a strict gate so the workflow as a whole stays red while the defect
+        # is open. It runs last so the other independent gates (compose,
+        # whitespace, ZIP) still produce their results even while it fails.
+        run: python -m benchmarks.score
