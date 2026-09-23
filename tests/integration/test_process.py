@@ -7,12 +7,15 @@ asserted on directly.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_policy_provider, get_process_service
 from app.core.enums import MaskingStrategy, PIIType
 from app.core.exceptions import ConsumerNotAllowedError, ServiceOverloadedError
 from app.main import app
+from app.policies.loader import FilePolicyProvider
 from app.policies.models import ConsumerPolicy
 
 ORIGINAL = "Напишите мне на test@example.com или +7 999 123-45-67"
@@ -344,3 +347,63 @@ def test_consumer_header_is_normalized(client: TestClient, unique_payload_id: st
     )
     assert resp.status_code == 200
     assert "@example.com" in resp.json()["result"]
+
+
+# --- 20. Consumer context rules applied via HTTP -----------------------------
+
+
+def test_context_rule_applied_via_http(
+    client: TestClient, unique_payload_id: str, tmp_path: Path
+) -> None:
+    """PIN is masked only when a BANK_CARD is present in the same text.
+
+    The rule is loaded from a consumer YAML and must be applied end-to-end
+    through POST /process, not just at the masking-engine level.
+    """
+    consumer = tmp_path / "pinrule.yaml"
+    consumer.write_text(
+        "enabled: true\n"
+        "detection:\n"
+        "  enabled_types:\n"
+        "    - BANK_CARD\n"
+        "    - PIN\n"
+        "masking:\n"
+        "  BANK_CARD: FULL_MASK\n"
+        "  PIN: FULL_MASK\n"
+        "demasking:\n"
+        "  enabled: true\n"
+        "context_rules:\n"
+        "  - type: PIN\n"
+        "    requires:\n"
+        "      - BANK_CARD\n"
+        "    enabled: true\n",
+        encoding="utf-8",
+    )
+    provider = FilePolicyProvider(tmp_path)
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_policy_provider] = lambda: provider
+    try:
+        # PIN without a card -> stays in the clear.
+        resp = client.post(
+            "/process",
+            json={"payload": "Мой пин 1234", "payload_id": unique_payload_id},
+            headers={"X-Consumer-ID": "pinrule"},
+        )
+        assert resp.status_code == 200
+        assert "1234" in resp.json()["result"]
+
+        # PIN with a card -> masked.
+        resp2 = client.post(
+            "/process",
+            json={
+                "payload": "Карта 4111111111111111 пин 1234",
+                "payload_id": f"{unique_payload_id}-card",
+            },
+            headers={"X-Consumer-ID": "pinrule"},
+        )
+        assert resp2.status_code == 200
+        result = resp2.json()["result"]
+        assert "1234" not in result
+        assert "4111111111111111" not in result
+    finally:
+        app.dependency_overrides.clear()
