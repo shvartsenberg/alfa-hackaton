@@ -89,6 +89,10 @@
     text: 6203 987654
     start: 8
     end: 19
+  - type: PASSPORT_ISSUER
+    text: отделом УФМС
+    start: 30
+    end: 42
 - id: pos_division_001
   text: Код подразделения 770-123 указан в паспорте.
   expected:
@@ -177,15 +181,15 @@
   text: 'Место рождения: город Москва, указано в анкете.'
   expected:
   - type: BIRTH_PLACE
-    text: город Москва
-    start: 16
+    text: Москва
+    start: 22
     end: 28
 - id: pos_birthplace_002
   text: Родился в городе Санкт-Петербург в 1985 году.
   expected:
   - type: BIRTH_PLACE
-    text: городе Санкт-Петербург
-    start: 10
+    text: Санкт-Петербург
+    start: 17
     end: 32
 - id: pos_citizenship_001
   text: Гражданство Российская Федерация подтверждено.
@@ -267,7 +271,7 @@
 - id: pos_country_002
   text: 'Гражданство: Казахстан, документы в порядке.'
   expected:
-  - type: COUNTRY
+  - type: CITIZENSHIP
     text: Казахстан
     start: 13
     end: 22
@@ -285,6 +289,10 @@
     text: '125009'
     start: 8
     end: 14
+  - type: CITY
+    text: Москва
+    start: 22
+    end: 28
 - id: pos_city_001
   text: Город Казань, улица Баумана.
   expected:
@@ -292,6 +300,10 @@
     text: Казань
     start: 6
     end: 12
+  - type: STREET
+    text: Баумана
+    start: 20
+    end: 27
 - id: pos_city_002
   text: г. Новосибирск, проспект Красный.
   expected:
@@ -299,6 +311,10 @@
     text: Новосибирск
     start: 3
     end: 14
+  - type: STREET
+    text: Красный
+    start: 25
+    end: 32
 - id: pos_street_001
   text: Улица Ленина, дом 10.
   expected:
@@ -306,6 +322,10 @@
     text: Ленина
     start: 6
     end: 12
+  - type: HOUSE
+    text: '10'
+    start: 18
+    end: 20
 - id: pos_street_002
   text: ул. Садовая, д. 5, кв. 7.
   expected:
@@ -313,6 +333,14 @@
     text: Садовая
     start: 4
     end: 11
+  - type: HOUSE
+    text: '5'
+    start: 16
+    end: 17
+  - type: APARTMENT
+    text: '7'
+    start: 23
+    end: 24
 - id: pos_house_001
   text: Дом 12, квартира 34.
   expected:
@@ -320,6 +348,10 @@
     text: '12'
     start: 4
     end: 6
+  - type: APARTMENT
+    text: '34'
+    start: 17
+    end: 19
 - id: pos_house_002
   text: д. 5А, строение 2.
   expected:
@@ -496,3 +528,187 @@
     text: +7 999 123-45-67
     start: 8
     end: 24
+- id: pos_birthplace_003
+  text: 'место рождения: город Санкт-Петербург'
+  expected:
+  - type: BIRTH_PLACE
+    text: Санкт-Петербург
+    start: 22
+    end: 37
+- id: pos_birthplace_004
+  text: родился в г. Нижний Новгород
+  expected:
+  - type: BIRTH_PLACE
+    text: Нижний Новгород
+    start: 13
+    end: 28
+- id: pos_birthplace_005
+  text: уроженка города Ростова-на-Дону
+  expected:
+  - type: BIRTH_PLACE
+    text: Ростова-на-Дону
+    start: 16
+    end: 31
+- id: pos_birthplace_006
+  text: 'Место рождения: город Екатеринбург, Свердловская область.'
+  expected:
+  - type: BIRTH_PLACE
+    text: Екатеринбург
+    start: 22
+    end: 34
+- id: pos_birthplace_007
+  text: Родилась в городе Казань.
+  expected:
+  - type: BIRTH_PLACE
+    text: Казань
+    start: 18
+    end: 24
+- id: pos_citizenship_003
+  text: 'гражданство: Российская Федерация'
+  expected:
+  - type: CITIZENSHIP
+    text: Российская Федерация
+    start: 13
+    end: 33
+- id: pos_citizenship_004
+  text: гражданин Российской Федерации
+  expected:
+  - type: CITIZENSHIP
+    text: Российской Федерации
+    start: 10
+    end: 30
+- id: pos_citizenship_005
+  text: гражданка Республики Беларусь
+  expected:
+  - type: CITIZENSHIP
+    text: Республики Беларусь
+    start: 10
+    end: 29
+- id: pos_citizenship_006
+  text: 'Гражданство: Республика Казахстан.'
+  expected:
+  - type: CITIZENSHIP
+    text: Республика Казахстан
+    start: 13
+    end: 33
+- id: pos_issuer_003
+  text: Паспорт выдан ОВД района Арбат города Москвы
+  expected:
+  - type: PASSPORT_ISSUER
+    text: ОВД района Арбат города Москвы
+    start: 14
+    end: 44
+- id: pos_issuer_004
+  text: Паспорт выдан УФМС России по г. Москве.
+  expected:
+  - type: PASSPORT_ISSUER
+    text: УФМС России по г. Москве
+    start: 14
+    end: 38
+- id: pos_issuer_005
+  text: 'Кем выдан: Отдел полиции №5 г. Санкт-Петербурга.'
+  expected:
+  - type: PASSPORT_ISSUER
+    text: Отдел полиции №5 г. Санкт-Петербурга
+    start: 11
+    end: 47
+- id: pos_issue_date_003
+  text: Паспорт выдан ОВД района Арбат 12.03.2015
+  expected:
+  - type: PASSPORT_ISSUE_DATE
+    text: 12.03.2015
+    start: 31
+    end: 41
+  - type: PASSPORT_ISSUER
+    text: ОВД района Арбат
+    start: 14
+    end: 30
+- id: pos_issue_date_004
+  text: Паспорт выдан УФМС России 20.08.2010 года.
+  expected:
+  - type: PASSPORT_ISSUE_DATE
+    text: 20.08.2010
+    start: 26
+    end: 36
+  - type: PASSPORT_ISSUER
+    text: УФМС России
+    start: 14
+    end: 25
+- id: pos_address_003
+  text: 'проживает по адресу: 101000, г. Москва, ул. Тверская, д. 12, кв. 34'
+  expected:
+  - type: ADDRESS
+    text: 101000, г. Москва, ул. Тверская, д. 12, кв. 34
+    start: 21
+    end: 67
+- id: pos_address_004
+  text: 'Адрес регистрации: г. Казань, ул. Баумана, д. 5, кв. 7.'
+  expected:
+  - type: ADDRESS
+    text: г. Казань, ул. Баумана, д. 5, кв. 7
+    start: 19
+    end: 54
+- id: neg_org_inn_003
+  text: ООО «ТехноСервис», ИНН 7701234567, КПП 770101001.
+  expected: []
+- id: neg_contract_002
+  text: Договор №123 от 15.08.2025 вступает в силу.
+  expected: []
+- id: neg_order_001
+  text: Номер заказа 12345, статус доставки обновлён.
+  expected: []
+- id: neg_random_001
+  text: Код 123456 для подтверждения операции.
+  expected: []
+- id: neg_bank_branch_001
+  text: 'Отделение банка по адресу: г. Москва, ул. Тверская, д. 1.'
+  expected: []
+- id: pos_address_005
+  text: 'Клиент Иванов живет: Москва, Тверская 10'
+  expected:
+  - type: PERSON_NAME
+    text: Иванов
+    start: 7
+    end: 13
+  - type: ADDRESS
+    text: Москва, Тверская 10
+    start: 21
+    end: 40
+- id: pos_birthplace_008
+  text: Место рождения — село Верхние Печёры Нижегородской области
+  expected:
+  - type: BIRTH_PLACE
+    text: Верхние Печёры Нижегородской области
+    start: 22
+    end: 58
+- id: pos_driver_003
+  text: 'Водительское удостоверение: 77 АА 123456'
+  expected:
+  - type: DRIVER_LICENSE
+    text: 77 АА 123456
+    start: 28
+    end: 40
+- id: neg_bank_phone_001
+  text: Телефон отделения банка +7 495 123-45-67 для справок
+  expected: []
+- id: pos_birthplace_009
+  text: 'Место рождения: с. Большие Вязёмы Московской области.'
+  expected:
+  - type: BIRTH_PLACE
+    text: Большие Вязёмы Московской области
+    start: 19
+    end: 52
+- id: pos_citizenship_007
+  text: Гражданство РФ.
+  expected:
+  - type: CITIZENSHIP
+    text: РФ
+    start: 12
+    end: 14
+- id: pos_phone_personal_001
+  text: Клиент пришёл в отделение банка, его личный телефон +7 999 123-45-67.
+  expected:
+  - type: PHONE
+    text: +7 999 123-45-67
+    start: 52
+    end: 68
