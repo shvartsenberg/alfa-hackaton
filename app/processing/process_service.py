@@ -64,18 +64,23 @@ class ProcessService:
         if not payload or not payload_id:
             raise InvalidPayloadError("payload and payload_id are required")
 
+        key = self._state_key(policy.consumer_id, payload_id)
         with Timer() as timer:
             state = self._restoration_store.transition(
-                payload_id,
-                lambda current: self._transition(current, payload, payload_id, policy),
+                key,
+                lambda current: self._transition(current, payload, key, policy),
             )
-            outcome = self._outcome_from_state(state, payload, payload_id)
+            outcome = self._outcome_from_state(state, payload, key)
 
         outcome.duration_ms = timer.elapsed_ms
         self._metrics.record_request(outcome.operation.value, timer.elapsed_ms)
         self._metrics.record_entities(outcome.entity_count)
         self._metrics.record_payload_size(len(payload.encode("utf-8")))
         return outcome
+
+    @staticmethod
+    def _state_key(consumer_id: str, payload_id: str) -> str:
+        return f"{consumer_id}:{payload_id}"
 
     def _transition(
         self,

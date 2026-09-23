@@ -338,15 +338,15 @@ def test_unknown_consumer_rejected(client: TestClient, unique_payload_id: str) -
     assert resp.json()["error"] == "CONSUMER_NOT_ALLOWED"
 
 
-def test_consumer_header_is_normalized(client: TestClient, unique_payload_id: str) -> None:
-    """Header value is trimmed/lowercased before use."""
+def test_consumer_header_is_used_as_is(client: TestClient, unique_payload_id: str) -> None:
+    """Header value is used verbatim; an unnormalized value is an unknown consumer."""
     resp = client.post(
         "/process",
         json={"payload": "test@example.com", "payload_id": unique_payload_id},
         headers={"X-Consumer-ID": "  DEMO  "},
     )
-    assert resp.status_code == 200
-    assert "@example.com" in resp.json()["result"]
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "CONSUMER_NOT_ALLOWED"
 
 
 # --- 20. Consumer context rules applied via HTTP -----------------------------
@@ -407,3 +407,126 @@ def test_context_rule_applied_via_http(
         assert "4111111111111111" not in result
     finally:
         app.dependency_overrides.clear()
+
+
+# --- 21. Consumer-specific masking behaviour ---------------------------------
+
+
+def _mask_as(client: TestClient, consumer: str, payload_id: str, payload: str) -> str:
+    resp = client.post(
+        "/process",
+        json={"payload": payload, "payload_id": payload_id},
+        headers={"X-Consumer-ID": consumer},
+    )
+    assert resp.status_code == 200
+    return resp.json()["result"]
+
+
+def test_default_and_demo_produce_different_masks(
+    client: TestClient, unique_payload_id: str
+) -> None:
+    """Same payload masks differently under default (FULL_MASK) vs demo (PARTIAL_MASK)."""
+    payload = "email test@example.com, карта 4111 1111 1111 1111"
+    default_masked = _mask_as(client, "default", unique_payload_id, payload)
+    demo_masked = _mask_as(client, "demo", f"{unique_payload_id}-demo", payload)
+    assert default_masked != demo_masked
+    # demo: EMAIL keeps the domain, BANK_CARD keeps the first/last two digits.
+    assert "@example.com" in demo_masked
+    assert "41" in demo_masked
+    assert "11" in demo_masked
+    assert "4111 1111 1111 1111" not in demo_masked
+    # default: FULL_MASK hides the domain and the whole card.
+    assert "@example.com" not in default_masked
+    assert "4111 1111 1111 1111" not in default_masked
+
+
+def test_type_not_in_enabled_types_stays_open(
+    client: TestClient, unique_payload_id: str
+) -> None:
+    """PASSPORT_NUMBER is not in demo's enabled_types -> stays in the clear."""
+    payload = "паспорт 1234 567890, email test@example.com"
+    result = _mask_as(client, "demo", unique_payload_id, payload)
+    assert "1234 567890" in result  # PASSPORT_NUMBER not masked under demo
+    assert "@example.com" in result  # EMAIL is PARTIAL_MASK -> domain kept
+
+
+def test_demo_roundtrip_returns_original(
+    client: TestClient, unique_payload_id: str
+) -> None:
+    """mask -> demask under demo returns the original text byte-for-byte."""
+    payload = "email test@example.com, карта 4111 1111 1111 1111"
+    masked = _mask_as(client, "demo", unique_payload_id, payload)
+    assert masked != payload
+    restored = _mask_as(client, "demo", unique_payload_id, masked)
+    assert restored == payload
+
+
+def test_no_pii_masks_to_itself_and_retry_returns_200(
+    client: TestClient, unique_payload_id: str
+) -> None:
+    """Text without PII masks to itself; a retry with the same payload_id is 200."""
+    resp1 = client.post(
+        "/process",
+        json={"payload": NO_PII, "payload_id": unique_payload_id},
+    )
+    assert resp1.status_code == 200
+    assert resp1.json()["result"] == NO_PII
+    resp2 = client.post(
+        "/process",
+        json={"payload": NO_PII, "payload_id": unique_payload_id},
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["result"] == NO_PII
+
+
+def test_same_payload_masks_identically_across_payload_ids(
+    client: TestClient, unique_payload_id: str
+) -> None:
+    """Masking is deterministic: the same payload under two payload_ids matches."""
+    payload = "email test@example.com, карта 4111 1111 1111 1111"
+    first = _mask(client, unique_payload_id, payload)
+    second = _mask(client, f"{unique_payload_id}-b", payload)
+    assert first == second
+
+
+def test_different_payload_under_used_payload_id_returns_4xx(
+    client: TestClient, unique_payload_id: str
+) -> None:
+    """A different payload under an already-used payload_id is rejected, not 200."""
+    _mask(client, unique_payload_id, ORIGINAL)
+    resp = _post(client, unique_payload_id, "совершенно другой текст")
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "INVALID_PAYLOAD"
+
+
+# --- 22. Restoration state is scoped by consumer -----------------------------
+
+
+def test_foreign_consumer_cannot_demask_another_consumers_mask(
+    client: TestClient, unique_payload_id: str
+) -> None:
+    """Consumer B cannot demask a mask produced by consumer A for the same payload_id."""
+    masked = _mask_as(client, "demo", unique_payload_id, ORIGINAL)
+    assert masked != ORIGINAL
+    # B has no state under its own key, so the masked text is treated as a fresh
+    # payload to mask, not demasked back to the original.
+    resp = client.post(
+        "/process",
+        json={"payload": masked, "payload_id": unique_payload_id},
+        headers={"X-Consumer-ID": "default"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["result"] != ORIGINAL
+
+
+def test_consumers_share_payload_id_independently(
+    client: TestClient, unique_payload_id: str
+) -> None:
+    """Two consumers can reuse one payload_id without a false 422."""
+    masked_a = _mask_as(client, "demo", unique_payload_id, ORIGINAL)
+    restored_a = _mask_as(client, "demo", unique_payload_id, masked_a)
+    assert restored_a == ORIGINAL
+
+    masked_b = _mask_as(client, "default", unique_payload_id, ORIGINAL)
+    restored_b = _mask_as(client, "default", unique_payload_id, masked_b)
+    assert restored_b == ORIGINAL
