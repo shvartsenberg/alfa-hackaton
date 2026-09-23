@@ -37,6 +37,8 @@ counts rather than asserting a false exact balance. No external LLM is used.
 
 from __future__ import annotations
 
+import contextlib
+import csv
 import json
 import math
 import os
@@ -47,6 +49,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from locust import FastHttpUser, constant_throughput, events, task
+from locust.stats import PERCENTILES_TO_REPORT, StatsCSV
 
 # Representative Russian payload covering several PII types. Each sentinel is
 # an original value that MUST NOT survive masking.
@@ -268,6 +271,43 @@ def _write_custom_metrics(environment, **_kwargs) -> None:  # type: ignore[no-un
     path = Path(CUSTOM_METRICS_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+@events.test_stop.add_listener
+def _write_final_stats_csv(environment, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+    """Persist the authoritative final stats CSV from ``environment.stats``.
+
+    Locust's periodic ``--csv`` writer rewrites ``stats_stats.csv`` on a timer and
+    can be killed at test stop before it captures the very last requests, leaving
+    a stale snapshot that disagrees with the final console table and the custom
+    metrics. This listener writes a fresh ``final_stats.csv`` from the live
+    ``environment.stats`` on the ``test_stop`` event (after all requests are
+    accounted), using the public ``StatsCSV.requests_csv`` export. The runner
+    treats this file as the authoritative aggregate; the periodic CSV is kept as
+    a sidecar for audit.
+
+    The file is written atomically: it is first written to a temporary file in
+    the same directory and then moved over ``final_stats.csv``. On any error the
+    temporary file is removed and no (possibly partial) ``final_stats.csv`` is
+    left behind, so the runner fails the step rather than trusting a stale or
+    truncated file.
+    """
+    if not CUSTOM_METRICS_PATH:
+        return
+    path = Path(CUSTOM_METRICS_PATH)
+    final_path = path.parent / "final_stats.csv"
+    tmp_path = path.parent / "final_stats.csv.tmp"
+    try:
+        with tmp_path.open("w", newline="", encoding="utf-8") as handle:
+            StatsCSV(environment, PERCENTILES_TO_REPORT).requests_csv(csv.writer(handle))
+        tmp_path.replace(final_path)
+    except Exception:
+        # A failure to export the final stats must not crash the shutdown; the
+        # runner will detect the missing final_stats.csv and fail the step rather
+        # than silently trusting a stale periodic CSV.
+        with contextlib.suppress(OSError):
+            tmp_path.unlink(missing_ok=True)
+        return
 
 
 def _parse_json_object(response) -> dict | None:  # type: ignore[no-untyped-def]
