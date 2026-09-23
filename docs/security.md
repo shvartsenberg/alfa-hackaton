@@ -96,9 +96,19 @@ metrics:
   ```bash
   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
   ```
-- Redis auth: use a URL with credentials, e.g.
-  `redis://:password@redis-host:6379/0`, or set `REDIS_PASSWORD` in the
-  compose environment.
+- The key must be identical across all workers and must never be committed.
+  In production (`APP_ENV=production`) a missing key fails fast at startup
+  instead of generating a random one that would be unrecoverable across
+  restarts.
+- Redis auth: the `redis` service in `docker-compose.yml` requires a password
+  (`REDIS_PASSWORD`). Generate with:
+  ```bash
+  python -c "import secrets; print(secrets.token_urlsafe(32))"
+  ```
+  The password is required (`${REDIS_PASSWORD:?REDIS_PASSWORD is required}`),
+  passed to `redis-server --requirepass`, used by the healthcheck
+  (`redis-cli -a ... ping`), and embedded in the app `REDIS_URL`
+  (`redis://:${REDIS_PASSWORD}@redis:6379/0`). It must never be committed.
 - TLS: terminate TLS at a reverse proxy / load balancer in front of the API,
   or use a Redis with a signed server certificate. mTLS is not required.
 - The Redis port is not exposed to the host in `docker-compose.yml`; only the
