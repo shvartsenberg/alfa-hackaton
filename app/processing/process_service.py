@@ -15,7 +15,8 @@ cannot corrupt the state (in-memory via a lock, Redis via compare-and-set).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field
 
 from app.core.enums import Operation, RestorationStateStatus
 from app.core.exceptions import InvalidPayloadError, ProcessingError
@@ -38,6 +39,7 @@ class ProcessOutcome:
     entity_count: int
     detected_types: list[str]
     duration_ms: float
+    stage_timings: dict[str, float] = field(default_factory=dict)
 
 
 class ProcessService:
@@ -65,30 +67,57 @@ class ProcessService:
             raise InvalidPayloadError("payload and payload_id are required")
 
         key = self._state_key(policy.consumer_id, payload_id)
+        stage_timings: dict[str, float] = {}
         with Timer() as timer:
-            # Detection + masking are expensive (possibly a slow LLM call).
-            # Compute them once, outside the store's transition lock, so
-            # concurrent requests for different payload_ids are not serialized
-            # on the callback. The timer covers them so the recorded duration
-            # reflects the real cost of the request.
-            prepared = self._prepare_mask(payload, key, policy)
-            state = self._restoration_store.transition(
-                key,
-                lambda current: self._transition(
-                    current, payload, key, policy, prepared
-                ),
-            )
+            # Detection + masking are expensive. They are only needed when the
+            # state is absent (a new MASK). For DEMASK, retry MASK, retry
+            # DEMASK and conflict cases the state already exists, so we skip
+            # detection/masking entirely.
+            #
+            # We do a cheap lookup first to decide whether to prepare. The
+            # prepared result is memoized in a closure so a CAS retry inside
+            # the store's transition does not re-run the detector/masker.
+            prepared: RestorationState | None = None
+            with Timer() as lookup_timer:
+                state_exists = self._restoration_store.get(key) is not None
+            stage_timings["state_lookup_ms"] = lookup_timer.elapsed_ms
+            if not state_exists:
+                with Timer() as prepare_timer:
+                    prepared = self._prepare_mask(payload, key, policy)
+                stage_timings["prepare_ms"] = prepare_timer.elapsed_ms
+
+            with Timer() as transition_timer:
+                state = self._restoration_store.transition(
+                    key,
+                    lambda current: self._transition(
+                        current, payload, key, policy, prepared
+                    ),
+                )
+            stage_timings["transition_ms"] = transition_timer.elapsed_ms
             outcome = self._outcome_from_state(state, payload, key)
 
         outcome.duration_ms = timer.elapsed_ms
+        outcome.stage_timings = stage_timings
         self._metrics.record_request(outcome.operation.value, timer.elapsed_ms)
         self._metrics.record_entities(outcome.entity_count)
         self._metrics.record_payload_size(len(payload.encode("utf-8")))
+        for stage, duration_ms in stage_timings.items():
+            self._metrics.record_stage(stage, duration_ms)
         return outcome
 
     @staticmethod
     def _state_key(consumer_id: str, payload_id: str) -> str:
-        return f"{consumer_id}:{payload_id}"
+        """Build an unambiguous storage key from consumer and payload ids.
+
+        A simple ``consumer:payload`` concatenation is ambiguous when either
+        value contains ``:``. We hash the two values with a NUL separator so
+        the composite key is unique regardless of the characters in the inputs.
+        The store additionally HMACs this key before writing to Redis.
+        """
+        digest = hashlib.sha256(
+            f"{consumer_id}\0{payload_id}".encode()
+        ).hexdigest()
+        return f"{consumer_id}:{digest}"
 
     def _transition(
         self,
@@ -96,10 +125,18 @@ class ProcessService:
         payload: str,
         payload_id: str,
         policy: ConsumerPolicy,
-        prepared: RestorationState,
+        prepared: RestorationState | None,
     ) -> RestorationState:
         if current is None:
+            if prepared is None:
+                # Rare race: the state was created and removed between the
+                # initial lookup and the transition. Prepare now (once).
+                prepared = self._prepare_mask(payload, payload_id, policy)
             return prepared
+        # The state belongs to a different consumer (or to no one, e.g. a
+        # legacy record without consumer_id): never expose it.
+        if current.consumer_id != policy.consumer_id:
+            raise InvalidPayloadError("payload does not match stored state")
         if current.state == RestorationStateStatus.MASKED:
             if hash_payload(payload) == current.original_hash:
                 # Retry of the original payload -> keep the same mask.
@@ -136,6 +173,7 @@ class ProcessService:
             entity_count=len(entities),
             detected_types=sorted({e.type.value for e in entities}),
             state=RestorationStateStatus.MASKED,
+            consumer_id=policy.consumer_id,
         )
 
     def _demask_state(

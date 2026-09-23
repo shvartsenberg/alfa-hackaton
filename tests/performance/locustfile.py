@@ -75,7 +75,7 @@ MASKED_SENTINELS = (
     "15.03.1990",
 )
 
-SCENARIO = os.getenv("LOAD_SCENARIO", "mixed")
+SCENARIO = os.getenv("LOAD_SCENARIO", "roundtrip")
 TARGET_RPS = max(float(os.getenv("TARGET_RPS", "100")), 0.1)
 USER_COUNT = max(int(os.getenv("LOCUST_USERS", "10")), 1)
 LARGE_PAYLOAD_CHARS = max(int(os.getenv("LARGE_PAYLOAD_CHARS", "10000")), 100)
@@ -144,6 +144,10 @@ ORGANIZER_MAX_USERS = min(
     ORGANIZER_HARD_MAX_USERS,
 )
 ORGANIZER_RPS_PER_USER = max(float(os.getenv("ORGANIZER_RPS_PER_USER", "10")), 0.1)
+# Optional floor on concurrent users. When set, the generator creates at least
+# this many users (capped at ORGANIZER_MAX_USERS) so a required concurrency can
+# actually be reached, rather than relying only on target_rps / rps_per_user.
+REQUIRED_CONCURRENT_USERS = max(int(os.getenv("REQUIRED_CONCURRENT_USERS", "0")), 0)
 ORGANIZER_PHASES = (
     {"start": 0, "end": 180, "target_rps": 330, "kind": "ramp_up"},
     {"start": 180, "end": 300, "target_rps": 330, "kind": "steady"},
@@ -172,6 +176,17 @@ def target_rps_at(t: float) -> float:
     return 0.0
 
 
+def _organizer_user_count(target: float) -> int:
+    """Number of users for the current organizer target.
+
+    The count is at least the required concurrent users (when set) and at most
+    the hard cap, so a required concurrency can actually be reached.
+    """
+    by_rate = max(1, math.ceil(target / ORGANIZER_RPS_PER_USER))
+    floor = REQUIRED_CONCURRENT_USERS
+    return min(ORGANIZER_MAX_USERS, max(by_rate, floor))
+
+
 def _current_per_user_rate(t: float | None = None) -> float:
     """Per-user task rate (tasks/second) for the current organizer target.
 
@@ -182,10 +197,7 @@ def _current_per_user_rate(t: float | None = None) -> float:
     if t is None:
         t = _ORGANIZER_SHAPE.get_run_time()
     target = target_rps_at(t)
-    users = min(
-        ORGANIZER_MAX_USERS,
-        max(1, math.ceil(target / ORGANIZER_RPS_PER_USER)),
-    )
+    users = _organizer_user_count(target)
     rate = target / users / REQUESTS_PER_TASK[SCENARIO]
     return max(rate, 0.001)
 
@@ -211,10 +223,7 @@ if LOAD_PROFILE == "organizer":
             if t >= ORGANIZER_DURATION:
                 return None
             target = target_rps_at(t)
-            users = min(
-                ORGANIZER_MAX_USERS,
-                max(1, math.ceil(target / ORGANIZER_RPS_PER_USER)),
-            )
+            users = _organizer_user_count(target)
             return (users, max(1.0, float(users)))
 
 # Per-run custom metrics aggregated across all users. These are not part of the
@@ -223,6 +232,7 @@ _METRICS_LOCK = threading.Lock()
 _CUSTOM_METRICS: dict[str, int] = {
     "mask_requests": 0,
     "demask_requests": 0,
+    "incomplete_roundtrips": 0,
     "http_2xx": 0,
     "http_429": 0,
     "http_422": 0,
@@ -251,6 +261,18 @@ def _write_custom_metrics(environment, **_kwargs) -> None:  # type: ignore[no-un
         return
     with _METRICS_LOCK:
         snapshot = dict(_CUSTOM_METRICS)
+    # Reconcile incomplete roundtrips: any MASK without a matching DEMASK is an
+    # incomplete pair. This includes demask failures (already counted) and
+    # masks cut off by the test ending (mask issued, demask never attempted).
+    # The reconciliation invariant is MASK == DEMASK + incomplete_roundtrips.
+    if SCENARIO == "roundtrip":
+        mask_count = snapshot.get("mask_requests", 0)
+        demask_count = snapshot.get("demask_requests", 0)
+        counted_incomplete = snapshot.get("incomplete_roundtrips", 0)
+        total_incomplete = mask_count - demask_count
+        if total_incomplete < 0:
+            total_incomplete = 0
+        snapshot["incomplete_roundtrips"] = max(counted_incomplete, total_incomplete)
     snapshot["scenario"] = SCENARIO
     snapshot["total_http_requests"] = (
         snapshot["http_2xx"]
@@ -457,8 +479,13 @@ class ProcessUser(FastHttpUser):
     def scenario_roundtrip(self) -> None:
         payload_id = str(uuid.uuid4())
         masked = self._mask(payload_id, ORIGINAL)
-        if masked is not None:
-            self._demask(payload_id, masked, ORIGINAL, "POST /process [demask]")
+        if masked is None:
+            return
+        restored = self._demask(payload_id, masked, ORIGINAL, "POST /process [demask]")
+        if restored is None:
+            # The mask succeeded but the demask did not complete (429, error,
+            # or transport failure). Count it as an incomplete roundtrip.
+            _bump("incomplete_roundtrips")
 
     def scenario_mask_retry(self) -> None:
         payload_id = str(uuid.uuid4())

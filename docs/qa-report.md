@@ -117,11 +117,11 @@ These are local-dataset results, not a claim about hidden organizer data.
   (`scripts/run_performance.py`); no RPS claim is made here without a run.
 - **Methodology**: each target runs as a separate step of `--duration`
   (default 60 s) with linear user spawn within that step only. This is **not** a
-  single smooth profile averaging ~330 RPS with peaks to 1000 RPS. The `mixed`
-  scenario is weighted so MASK == DEMASK **in expectation**, not strictly per
-  run (interrupted roundtrips and 429s can unbalance actual counts). It covers
-  retry MASK, retry DEMASK, payload_id conflicts, and a separate large-payload
-  scenario. No external LLM.
+  single smooth profile averaging ~330 RPS with peaks to 1000 RPS. The main SLA
+  scenario is `roundtrip` (strict MASK â†’ DEMASK with paired counters); `mixed`
+  is an additional stress profile. Retry MASK, retry DEMASK, payload_id
+  conflicts, and a separate large-payload scenario run as their own scenarios.
+  No external LLM.
 - Reports persist target RPS, actual RPS, average latency, p50/p95/p99, request
   count, MASK/DEMASK counts, HTTP 2xx, HTTP 429, HTTP 422, other HTTP statuses,
   functional errors, transport errors, and CPU/RAM of the load generator (when
@@ -390,3 +390,36 @@ The 330.94 target is still not reached. The bottleneck (server vs. load
 generator) is **not localized**: server CPU was not sampled and both run on the
 same machine. No confirmed 1000 RPS result exists. Artifacts are gitignored
 under `artifacts/performance/current-review/`.
+
+
+## Confirmed Redis run (4 workers, roundtrip) — main production profile
+
+A full 480s `--profile organizer --scenario roundtrip` run against a 4-worker
+Redis deployment (`RESTORATION_STORE_BACKEND=redis`, `--max-users 200`,
+`--rps-per-user 10`, quiet logging) is the **main production benchmark**. The
+memory single-worker runs above are diagnostic only.
+
+| Metric | Value |
+| --- | --- |
+| target average RPS | 330.94 |
+| actual average RPS | 307.62 |
+| achieved ratio | 0.930 |
+| average latency | 41.5 ms |
+| p50 / p95 / p99 | 17 / 130 / 160 ms |
+| MASK / DEMASK / incomplete | 73867 / 73851 / 16 |
+| 2xx / 429 / 422 / errors | 147718 / 0 / 0 / 0 |
+| configured max users | 200 |
+| observed max users | ~100 |
+| observed peak RPS | ~852 |
+
+**Concurrency honesty.** `configured_max_users` (200) is the configured limit,
+not the achieved concurrency. `observed_max_users` (~100) is derived from
+`stats_stats_history.csv` and reflects actually active users. To force 200
+concurrent users, pass `--required-concurrent-users 200`.
+
+**Peak honesty.** `observed_peak_rps` (~852) is the actual peak from the
+history. **1000 RPS is not confirmed** by any real measurement. Do not claim
+1000 RPS without a run that reaches it.
+
+Artifacts: `artifacts/performance/final-organizer-redis/`. Performance
+artifacts are gitignored and excluded from the submission ZIP.

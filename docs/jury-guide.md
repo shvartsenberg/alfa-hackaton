@@ -131,8 +131,12 @@ a `LoadTestShape` + dynamic `wait_time`:
 
 ```bash
 python scripts/run_performance.py --host http://localhost:8000 \
-  --profile organizer --scenario mixed
+  --profile organizer --scenario roundtrip
 ```
+
+The main SLA scenario is `roundtrip` (strict MASK → DEMASK with paired
+counters). `mixed` remains an additional stress profile; retry, conflict and
+large payload run as separate scenarios.
 
 480s profile: ramp 0→330 (0–180s), steady 330 (180–300s), peak 1000 (300–330s),
 decay 1000→330 (330–360s), steady 330 (360–480s). Target average = **330.9375
@@ -143,16 +147,15 @@ Actual RPS/latency/status/errors come from the report, not the formula;
 `summary.json` includes profile metadata (phases, `target_average_rps`,
 `actual_average_rps`, `target_vs_actual_delta`).
 
-> **Not verified by a real full 480s run.** The profile is implemented and
-> covered by unit tests of `target_rps_at(t)`, the shape `tick()` cap, the
-> dynamic rate, and CLI validation. A short executable smoke
-> (`ORGANIZER_DURATION=5`, `ORGANIZER_MAX_USERS=5`, `ORGANIZER_RPS_PER_USER=1`)
-> against a local app exited 0 with 19 requests, 0 errors, and reconciled
-> counters (custom total 19 == CSV Request Count 19), confirming the shape +
-> dynamic wait_time + custom-metrics-on-stop work end-to-end. This is not a
-> capacity/SLA result and does not replace the full 480s run. The earlier
-> low-load smoke belongs to the old scenario version and is not evidence for
-> this profile.
+> **Confirmed Redis run (4 workers, roundtrip).** A full 480s organizer run
+> against a 4-worker Redis deployment achieved **307.62 RPS** average (target
+> 330.94), p50 17ms, p95 130ms, p99 160ms, MASK 73867 / DEMASK 73851 /
+> incomplete 16, 0 errors. `configured_max_users` (200) is the configured
+> limit; `observed_max_users` (~100) is the actual concurrency from the history
+> CSV. `observed_peak_rps` (~852) is the actual peak; **1000 RPS is not
+> confirmed**. Use `--required-concurrent-users 200` to force the generator to
+> create 200 users. The main production profile is Redis; memory is diagnostic
+> only.
 
 ## Submission ZIP
 

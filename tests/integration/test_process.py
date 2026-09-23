@@ -338,15 +338,15 @@ def test_unknown_consumer_rejected(client: TestClient, unique_payload_id: str) -
     assert resp.json()["error"] == "CONSUMER_NOT_ALLOWED"
 
 
-def test_consumer_header_is_used_as_is(client: TestClient, unique_payload_id: str) -> None:
-    """Header value is used verbatim; an unnormalized value is an unknown consumer."""
+def test_consumer_header_is_normalized(client: TestClient, unique_payload_id: str) -> None:
+    """Header value is trimmed and lowercased before use."""
     resp = client.post(
         "/process",
         json={"payload": "test@example.com", "payload_id": unique_payload_id},
         headers={"X-Consumer-ID": "  DEMO  "},
     )
-    assert resp.status_code == 403
-    assert resp.json()["error"] == "CONSUMER_NOT_ALLOWED"
+    assert resp.status_code == 200
+    assert "@example.com" in resp.json()["result"]
 
 
 # --- 20. Consumer context rules applied via HTTP -----------------------------

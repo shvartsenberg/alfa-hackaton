@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED_DIRS = {
     ".git",
+    ".kilo",
     ".idea",
     ".vscode",
     ".venv",

@@ -20,13 +20,16 @@ logger = get_logger("api.process")
 
 
 @router.post("/process", response_model=ProcessResponse)
-async def process(
+def process(
     request: Request,
     body: ProcessRequest,
     process_service: ProcessService = Depends(get_process_service),
     policy_provider: PolicyProvider = Depends(get_policy_provider),
     consumer_id: str = Depends(get_consumer_id),
 ) -> ProcessResponse:
+    # A plain ``def`` handler lets FastAPI run the synchronous CPU/storage
+    # pipeline in its thread pool, so a slow request does not block the async
+    # event loop and other requests can proceed concurrently.
     policy = policy_provider.get_policy(consumer_id)
     outcome = process_service.process(body.payload, body.payload_id, policy)
     logger.info(

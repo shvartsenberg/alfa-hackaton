@@ -123,7 +123,15 @@ def get_process_service() -> ProcessService:
 def get_consumer_id(
     x_consumer_id: Annotated[str | None, Header()] = None,
 ) -> str:
-    return x_consumer_id or get_settings().default_consumer_id
+    """Return a normalized consumer id.
+
+    The header value is trimmed and lowercased so an unvalidated value is never
+    used or logged as-is. An empty value falls back to the default consumer.
+    """
+    if x_consumer_id is None:
+        return get_settings().default_consumer_id
+    normalized = x_consumer_id.strip().lower()
+    return normalized or get_settings().default_consumer_id
 
 
 @lru_cache

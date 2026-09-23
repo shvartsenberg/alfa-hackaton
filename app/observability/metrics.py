@@ -70,6 +70,13 @@ class Metrics:
             buckets=PAYLOAD_SIZE_BUCKETS,
             registry=self.registry,
         )
+        self.stage_duration = Histogram(
+            "pii_proxy_stage_duration_seconds",
+            "Duration of a processing stage (state_lookup, prepare, transition).",
+            ("stage",),
+            buckets=HTTP_LATENCY_BUCKETS,
+            registry=self.registry,
+        )
 
     @staticmethod
     def _safe(operation: object, method: str, *args: object, **kwargs: object) -> None:
@@ -120,6 +127,13 @@ class Metrics:
     def record_payload_size(self, size_bytes: int) -> None:
         self._safe(self.payload_size, "observe", size_bytes)
 
+    def record_stage(self, stage: str, duration_seconds: float) -> None:
+        self._safe(
+            self.stage_duration.labels(stage=stage),
+            "observe",
+            duration_seconds,
+        )
+
     def render(self) -> bytes:
         return generate_latest(self.registry)
 
@@ -141,6 +155,9 @@ class MetricsRecorder:
 
     def record_payload_size(self, size_bytes: int) -> None:
         self._metrics.record_payload_size(size_bytes)
+
+    def record_stage(self, stage: str, duration_ms: float) -> None:
+        self._metrics.record_stage(stage, duration_ms / 1000.0)
 
 
 class Timer:

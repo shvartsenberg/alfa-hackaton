@@ -152,8 +152,12 @@ python scripts/benchmark.py --url http://localhost:8000 --users 200 --duration 3
 
 ```bash
 python scripts/run_performance.py --host http://localhost:8000 \
-  --profile organizer --scenario mixed
+  --profile organizer --scenario roundtrip
 ```
+
+Основной SLA-сценарий — `roundtrip` (строгий MASK → DEMASK с парными
+счётчиками). `mixed` остаётся дополнительным stress-профилем; retry, conflict
+и large payload запускаются отдельными сценариями.
 
 Точный 480-секундный профиль:
 
@@ -305,6 +309,40 @@ REDIS_URL=redis://:password@redis-host:6379/0
 python scripts/run_performance.py --host http://localhost:8000 \
   --targets 100,330,500,1000 --scenario mixed --duration 120
 ```
+
+## 9.7. Подтверждённый Redis-прогон (основной production-профиль)
+
+Основной production-профиль — **Redis** (несколько workers). Memory-бэкенд
+остаётся для диагностики и **не** является основным benchmark.
+
+Подтверждённый 480-секундный прогон (4 workers, Redis, `roundtrip`):
+
+| Метрика | Значение |
+| --- | --- |
+| target average RPS | 330.94 |
+| actual average RPS | 307.62 |
+| average latency | 41.5 ms |
+| p50 / p95 / p99 | 17 / 130 / 160 ms |
+| MASK / DEMASK / incomplete | 73867 / 73851 / 16 |
+| 2xx / 429 / 422 / errors | 147718 / 0 / 0 / 0 |
+| configured max users | 200 |
+| observed max users | ~100 (см. ниже) |
+| observed peak RPS | ~852 |
+
+**Важно про concurrency.** `configured_max_users` — это настроенный предел,
+а не фактически достигнутая concurrency. `observed_max_users` вычисляется из
+истории Locust (`stats_stats_history.csv`) и отражает реально активных
+пользователей. Для гарантии 200 одновременных соединений используйте
+`--required-concurrent-users 200`; без него генератор может создать меньше
+пользователей, чем предел.
+
+**Важно про peak RPS.** `observed_peak_rps` — фактический пик из истории.
+Пик 1000 RPS **не подтверждён** фактическими измерениями (наблюдалось ~852
+RPS). Не заявляйте 1000 RPS без реального прогона.
+
+Артефакты: `artifacts/performance/final-organizer-redis/` (`summary.json`,
+`summary.md`, `final_stats.csv`, `custom_metrics.json`,
+`stats_stats_history.csv`). Performance-артефакты не попадают в ZIP.
 
 **Не проверено** в этом прогоне: Redis store, multiworker, большие payload.
 Точные команды/окружение для них:

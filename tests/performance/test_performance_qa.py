@@ -27,6 +27,8 @@ from scripts.run_performance import (
     check_health,
     read_authoritative_aggregate,
     read_custom_metrics,
+    read_history_metrics,
+    redact_url,
 )
 from tests.performance import locustfile
 
@@ -162,6 +164,163 @@ def test_build_result_accepts_reconciled_counters() -> None:
         memory_measured=True,
     )
     assert result.passed is True
+
+
+# --- roundtrip reconciliation (MASK == DEMASK + incomplete) -----------------
+
+
+def _roundtrip_result(custom: dict[str, int]) -> object:
+    row = {
+        "Request Count": str(custom.get("http_2xx", 0)),
+        "Failure Count": "0",
+        "Requests/s": "100",
+        "50%": "5",
+        "95%": "10",
+        "99%": "20",
+    }
+    return build_result(
+        row,
+        target_rps=100,
+        users=10,
+        duration_seconds=60,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics=custom,
+        cpu_measured=True,
+        memory_measured=True,
+    )
+
+
+def test_roundtrip_balanced_passes() -> None:
+    result = _roundtrip_result(
+        {
+            "http_2xx": 200,
+            "http_429": 0,
+            "http_422": 0,
+            "http_other": 0,
+            "transport_errors": 0,
+            "mask_requests": 100,
+            "demask_requests": 100,
+            "incomplete_roundtrips": 0,
+            "functional_errors": 0,
+        }
+    )
+    assert result.passed is True
+
+
+def test_roundtrip_reconciliation_with_one_incomplete() -> None:
+    # MASK=100, DEMASK=99, incomplete=1 -> MASK == DEMASK + incomplete.
+    result = _roundtrip_result(
+        {
+            "http_2xx": 199,
+            "http_429": 0,
+            "http_422": 0,
+            "http_other": 0,
+            "transport_errors": 0,
+            "mask_requests": 100,
+            "demask_requests": 99,
+            "incomplete_roundtrips": 1,
+            "functional_errors": 0,
+        }
+    )
+    assert result.passed is True
+
+
+def test_roundtrip_reconciliation_mismatch_fails() -> None:
+    # MASK=100, DEMASK=98, incomplete=1 -> 100 != 98+1=99 -> FAIL.
+    result = _roundtrip_result(
+        {
+            "http_2xx": 199,
+            "http_429": 0,
+            "http_422": 0,
+            "http_other": 0,
+            "transport_errors": 0,
+            "mask_requests": 100,
+            "demask_requests": 98,
+            "incomplete_roundtrips": 1,
+            "functional_errors": 0,
+        }
+    )
+    assert result.passed is False
+    assert any("reconciliation" in v for v in result.violations)
+
+
+def test_roundtrip_invalid_incomplete_fails() -> None:
+    # incomplete > MASK is impossible; reconciliation must fail.
+    result = _roundtrip_result(
+        {
+            "http_2xx": 200,
+            "http_429": 0,
+            "http_422": 0,
+            "http_other": 0,
+            "transport_errors": 0,
+            "mask_requests": 100,
+            "demask_requests": 99,
+            "incomplete_roundtrips": 5,
+            "functional_errors": 0,
+        }
+    )
+    assert result.passed is False
+
+
+def test_roundtrip_large_incomplete_share_fails() -> None:
+    # incomplete / MASK > 1% -> FAIL.
+    result = _roundtrip_result(
+        {
+            "http_2xx": 200,
+            "http_429": 0,
+            "http_422": 0,
+            "http_other": 0,
+            "transport_errors": 0,
+            "mask_requests": 100,
+            "demask_requests": 90,
+            "incomplete_roundtrips": 10,
+            "functional_errors": 0,
+        }
+    )
+    assert result.passed is False
+    assert any("incomplete pairs" in v for v in result.violations)
+
+
+def test_roundtrip_zero_mask_demask_fails() -> None:
+    result = _roundtrip_result(
+        {
+            "http_2xx": 0,
+            "http_429": 0,
+            "http_422": 0,
+            "http_other": 0,
+            "transport_errors": 0,
+            "mask_requests": 0,
+            "demask_requests": 0,
+            "incomplete_roundtrips": 0,
+            "functional_errors": 0,
+        }
+    )
+    assert result.passed is False
+    assert any("no MASK or DEMASK" in v for v in result.violations)
+
+
+def test_roundtrip_429_after_mask_increments_incomplete() -> None:
+    """A 429 on the demask step after a successful MASK is an incomplete pair."""
+    _reset_metrics()
+    masked = "t***@example.com"
+    # First response: successful MASK. Second response: 429 with Retry-After.
+    user = _FakeUser(
+        [
+            _FakeResponse(200, body={"result": masked}),
+            _FakeResponse(429, headers={"Retry-After": "1"}),
+        ]
+    )
+    locustfile.ProcessUser.scenario_roundtrip(user)
+    assert locustfile._CUSTOM_METRICS["mask_requests"] == 1
+    assert locustfile._CUSTOM_METRICS["demask_requests"] == 0
+    assert locustfile._CUSTOM_METRICS["incomplete_roundtrips"] == 1
+    assert locustfile._CUSTOM_METRICS["http_429"] == 1
+    assert locustfile._CUSTOM_METRICS["functional_errors"] == 0
 
 
 def test_build_result_flags_all_429_as_not_passed() -> None:
@@ -1296,3 +1455,158 @@ def test_benchmark_exit_nonzero_on_no_requests(monkeypatch) -> None:  # type: ig
     monkeypatch.setattr(benchmark, "_run_user", lambda *a, **k: None)
     monkeypatch.setattr(benchmark, "_Counters", lambda: counters)
     assert benchmark.main(["--users", "1", "--duration", "0.1"]) == 2
+
+# --- Reporting: configured vs observed users, peak RPS, gates ---------------
+
+
+def _roundtrip_custom(mask: int = 100, demask: int = 100, incomplete: int = 0) -> dict[str, int]:
+    return {
+        "http_2xx": mask + demask,
+        "http_429": 0,
+        "http_422": 0,
+        "http_other": 0,
+        "transport_errors": 0,
+        "mask_requests": mask,
+        "demask_requests": demask,
+        "incomplete_roundtrips": incomplete,
+        "functional_errors": 0,
+    }
+
+
+def _row(requests: int = 200) -> dict[str, str]:
+    return {
+        "Request Count": str(requests),
+        "Failure Count": "0",
+        "Requests/s": "100",
+        "50%": "5",
+        "95%": "10",
+        "99%": "20",
+    }
+
+
+def test_configured_users_not_mixed_with_observed() -> None:
+    result = build_result(
+        _row(),
+        target_rps=100,
+        users=200,
+        duration_seconds=60,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics=_roundtrip_custom(),
+        observed_max_users=100.0,
+        observed_peak_rps=500.0,
+        target_peak_rps=1000.0,
+    )
+    assert result.users == 200  # configured
+    assert result.observed_max_users == 100.0  # observed, distinct
+
+
+def test_required_concurrency_gate_fails_when_not_reached() -> None:
+    result = build_result(
+        _row(),
+        target_rps=100,
+        users=200,
+        duration_seconds=60,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics=_roundtrip_custom(),
+        observed_max_users=100.0,
+        required_concurrent_users=200,
+    )
+    assert result.passed is False
+    assert any("observed max users" in v for v in result.violations)
+
+
+def test_required_concurrency_gate_passes_when_reached() -> None:
+    result = build_result(
+        _row(),
+        target_rps=100,
+        users=200,
+        duration_seconds=60,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics=_roundtrip_custom(),
+        observed_max_users=200.0,
+        required_concurrent_users=200,
+    )
+    assert result.passed is True
+
+
+def test_peak_rps_gate_fails_when_below_target() -> None:
+    result = build_result(
+        _row(),
+        target_rps=100,
+        users=200,
+        duration_seconds=60,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics=_roundtrip_custom(),
+        observed_peak_rps=500.0,
+        target_peak_rps=1000.0,
+        min_peak_ratio=0.9,
+    )
+    assert result.passed is False
+    assert any("observed peak RPS" in v for v in result.violations)
+
+
+def test_incomplete_ratio_gate_uses_configured_threshold() -> None:
+    # 10 incomplete / 100 MASK = 10% > 5% threshold -> FAIL.
+    result = build_result(
+        _row(),
+        target_rps=100,
+        users=200,
+        duration_seconds=60,
+        locust_exit_code=0,
+        max_error_rate=1,
+        max_p95_ms=200,
+        max_p99_ms=500,
+        min_achieved_ratio=0.9,
+        scenario="roundtrip",
+        custom_metrics=_roundtrip_custom(mask=100, demask=90, incomplete=10),
+        max_incomplete_ratio=0.05,
+    )
+    assert result.passed is False
+    assert any("incomplete pairs" in v for v in result.violations)
+
+
+def test_redact_url_strips_credentials() -> None:
+    assert redact_url("redis://:secret@host:6379/0") == "redis://host:6379/0"
+    assert redact_url("redis://user:pass@host:6379/0") == "redis://host:6379/0"
+    assert redact_url("http://localhost:8000") == "http://localhost:8000"
+
+
+def test_read_history_metrics(tmp_path: Path) -> None:
+    history = tmp_path / "stats_stats_history.csv"
+    history.write_text(
+        "Timestamp,User Count,Type,Name,Requests/s\n"
+        "1,0,,Aggregated,0.0\n"
+        "2,50,,Aggregated,100.0\n"
+        "3,200,,Aggregated,850.0\n"
+        "4,150,,Aggregated,500.0\n",
+        encoding="utf-8",
+    )
+    max_users, peak_rps = read_history_metrics(tmp_path)
+    assert max_users == 200.0
+    assert peak_rps == 850.0
+
+
+def test_read_history_metrics_missing_returns_zero(tmp_path: Path) -> None:
+    max_users, peak_rps = read_history_metrics(tmp_path)
+    assert max_users == 0.0
+    assert peak_rps == 0.0

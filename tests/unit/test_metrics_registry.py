@@ -61,6 +61,39 @@ def test_payload_size_uses_dedicated_byte_buckets() -> None:
     assert _sample(metrics, "pii_proxy_payload_size_bytes_bucket", {"le": "4096.0"}) == 1
 
 
+def test_stage_timings_recorded_per_stage() -> None:
+    metrics = Metrics(CollectorRegistry())
+    recorder = MetricsRecorder(metrics)
+    recorder.record_stage("state_lookup", 1.0)
+    recorder.record_stage("prepare", 5.0)
+    recorder.record_stage("transition", 2.0)
+
+    assert (
+        _sample(
+            metrics,
+            "pii_proxy_stage_duration_seconds_count",
+            {"stage": "state_lookup"},
+        )
+        == 1
+    )
+    assert (
+        _sample(
+            metrics,
+            "pii_proxy_stage_duration_seconds_sum",
+            {"stage": "prepare"},
+        )
+        == 0.005
+    )
+    assert (
+        _sample(
+            metrics,
+            "pii_proxy_stage_duration_seconds_count",
+            {"stage": "transition"},
+        )
+        == 1
+    )
+
+
 def test_render_prometheus_contains_standard_metric_names() -> None:
     metrics = Metrics(CollectorRegistry())
     metrics.observe_http_request("GET", "/health", 200, 0.001)

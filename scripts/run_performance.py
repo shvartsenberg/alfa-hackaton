@@ -18,6 +18,7 @@ available.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import json
 import math
@@ -33,6 +34,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 LOCUSTFILE = PROJECT_ROOT / "tests" / "performance" / "locustfile.py"
 # Each target runs as a separate step of --duration with linear user spawn
 # within that step only; this is not a single sustained-average profile.
@@ -73,9 +76,14 @@ class StepResult:
     p95_ms: float
     p99_ms: float
     users: int
+    observed_max_users: float
+    observed_peak_rps: float
+    target_peak_rps: float
     duration_seconds: int
     mask_requests: int
     demask_requests: int
+    incomplete_roundtrips: int
+    incomplete_ratio: float
     http_2xx: int
     http_429: int
     http_422: int
@@ -90,6 +98,222 @@ class StepResult:
     locust_exit_code: int
     passed: bool
     violations: list[str] = field(default_factory=list)
+
+
+def redact_url(url: str) -> str:
+    """Redact credentials from a URL (e.g. ``redis://:pass@host`` -> ``redis://host``)."""
+    if "://" not in url:
+        return url
+    scheme, _, rest = url.partition("://")
+    if "@" in rest:
+        rest = rest.rsplit("@", 1)[1]
+    return f"{scheme}://{rest}"
+
+
+def collect_docker_metrics() -> dict[str, object]:
+    """Best-effort CPU/memory for app and Redis containers via ``docker stats``.
+
+    Returns ``{"app": {...}, "redis": {...}}`` with ``null`` values and a
+    ``reason`` when Docker is unavailable. Never fails the run.
+    """
+    result: dict[str, object] = {}
+    try:
+        import json as _json
+
+        proc = subprocess.run(
+            ["docker", "stats", "--no-stream", "--format", "{{json .}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if proc.returncode != 0:
+            return {"app": None, "redis": None, "reason": "docker stats unavailable"}
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = _json.loads(line)
+            except ValueError:
+                continue
+            name = str(entry.get("Name", "")).lower()
+            cpu = entry.get("CPUPerc", "0%")
+            mem = entry.get("MemUsage", "0 / 0")
+            mem_used = mem.split("/")[0].strip()
+            cpu_val = _parse_cpu(cpu)
+            try:
+                mem_val = _parse_mem(mem_used)
+            except ValueError:
+                mem_val = None
+            if "api" in name or "app" in name:
+                result["app"] = {"cpu_percent": cpu_val, "memory_mb": mem_val}
+            elif "redis" in name:
+                result["redis"] = {"cpu_percent": cpu_val, "memory_mb": mem_val}
+    except Exception:
+        return {"app": None, "redis": None, "reason": "docker unavailable"}
+    result.setdefault("app", None)
+    result.setdefault("redis", None)
+    return result
+
+
+def _parse_mem(value: str) -> float:
+    """Parse a Docker memory string like ``123.4MiB`` or ``1.2GiB`` into MB."""
+    value = value.strip()
+    if value.endswith("MiB"):
+        return float(value[:-3])
+    if value.endswith("GiB"):
+        return float(value[:-3]) * 1024
+    if value.endswith("KiB"):
+        return float(value[:-3]) / 1024
+    if value.endswith("B"):
+        return float(value[:-1]) / (1024 * 1024)
+    return float(value)
+
+
+def _parse_cpu(value: str) -> float | None:
+    try:
+        return float(value.replace("%", ""))
+    except ValueError:
+        return None
+
+
+def collect_stage_timings(host: str) -> dict[str, object]:
+    """Fetch stage-duration histograms from the app's /metrics endpoint.
+
+    Returns per-stage aggregates (count, avg, p50, p95, p99, max) in seconds.
+    Returns an empty dict when the endpoint is unavailable or the metric is
+    absent; this never fails the run.
+    """
+    try:
+        with urllib.request.urlopen(f"{host}/metrics", timeout=5) as resp:
+            text = resp.read().decode("utf-8")
+    except Exception:
+        return {}
+    # Parse pii_proxy_stage_duration_seconds_bucket{stage="X",le="Y"} lines.
+    buckets: dict[str, dict[float, int]] = {}
+    counts: dict[str, int] = {}
+    sums: dict[str, float] = {}
+    for line in text.splitlines():
+        if not line.startswith("pii_proxy_stage_duration_seconds_"):
+            continue
+        if "_bucket{" in line:
+            stage = _extract_label(line, "stage")
+            le = _extract_label(line, "le")
+            if stage is None or le is None:
+                continue
+            with contextlib.suppress(ValueError, IndexError):
+                value = float(line.rsplit(" ", 1)[1])
+                buckets.setdefault(stage, {})[float(le)] = int(value)
+        elif "_count{" in line:
+            stage = _extract_label(line, "stage")
+            if stage is None:
+                continue
+            with contextlib.suppress(ValueError, IndexError):
+                counts[stage] = int(float(line.rsplit(" ", 1)[1]))
+        elif "_sum{" in line:
+            stage = _extract_label(line, "stage")
+            if stage is None:
+                continue
+            with contextlib.suppress(ValueError, IndexError):
+                sums[stage] = float(line.rsplit(" ", 1)[1])
+    result: dict[str, object] = {}
+    for stage, stage_buckets in buckets.items():
+        count = counts.get(stage, 0)
+        if count == 0:
+            result[stage] = {"count": 0}
+            continue
+        total = sums.get(stage, 0.0)
+        avg = total / count
+        p50 = _hist_percentile(stage_buckets, count, 0.50)
+        p95 = _hist_percentile(stage_buckets, count, 0.95)
+        p99 = _hist_percentile(stage_buckets, count, 0.99)
+        result[stage] = {
+            "count": count,
+            "avg_seconds": avg,
+            "p50_seconds": p50,
+            "p95_seconds": p95,
+            "p99_seconds": p99,
+            "max_seconds": _hist_max(stage_buckets),
+        }
+    return result
+
+
+def _hist_max(buckets: dict[float, int]) -> float:
+    """Return the largest finite bucket bound (ignore the +Inf bucket)."""
+    finite = [le for le in buckets if le != float("inf")]
+    return max(finite, default=0.0)
+
+
+def _extract_label(line: str, label: str) -> str | None:
+    """Extract a label value from a Prometheus metric line."""
+    start = line.find(f'{label}="')
+    if start == -1:
+        return None
+    start += len(label) + 2
+    end = line.find('"', start)
+    if end == -1:
+        return None
+    return line[start:end]
+
+
+def _hist_percentile(buckets: dict[float, int], count: int, p: float) -> float:
+    """Approximate a percentile from histogram bucket counts."""
+    target = count * p
+    cumulative = 0
+    for le in sorted(buckets):
+        cumulative += buckets[le]
+        if cumulative >= target:
+            return le
+    return max(buckets, default=0.0)
+
+
+def collect_environment() -> dict[str, object]:
+    """Capture the run environment with secrets redacted.
+
+    Never includes Redis passwords, MASKING_KEY, auth headers, or payloads.
+    """
+    import platform
+
+    from app.config.settings import get_settings
+
+    settings = get_settings()
+    redis_url = redact_url(settings.redis_url)
+    commit = ""
+    dirty = False
+    try:
+        import subprocess
+
+        commit = (
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            .stdout.strip()
+        )
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+        )
+    except Exception:
+        commit = ""
+        dirty = False
+    return {
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "hostname": platform.node(),
+        "os": platform.platform(),
+        "python_version": platform.python_version(),
+        "storage_backend": settings.restoration_store_backend,
+        "redis_url_redacted": redis_url,
+        "git_commit": commit,
+        "git_dirty": dirty,
+    }
 
 
 def parse_targets(spec: str) -> list[float]:
@@ -222,6 +446,7 @@ def run_organizer_profile(
     rps_per_user: float,
     max_users: int,
     output_dir: Path,
+    required_concurrent_users: int = 0,
 ) -> tuple[int, float, float, bool, bool]:
     """Run the single continuous organizer profile and return process stats.
 
@@ -266,6 +491,7 @@ def run_organizer_profile(
             "ORGANIZER_DURATION": str(ORGANIZER_DURATION),
             "ORGANIZER_RPS_PER_USER": str(rps_per_user),
             "ORGANIZER_MAX_USERS": str(max_users),
+            "REQUIRED_CONCURRENT_USERS": str(required_concurrent_users),
             "CUSTOM_METRICS_PATH": str(custom_metrics_path),
         }
     )
@@ -294,6 +520,36 @@ def read_aggregate(stats_path: Path) -> dict[str, str]:
         if row.get("Name") == "Aggregated":
             return row
     raise RuntimeError(f"Aggregated row not found in {stats_path}")
+
+
+def read_history_metrics(step_dir: Path) -> tuple[float, float]:
+    """Return (observed_max_users, observed_peak_rps) from the history CSV.
+
+    The ``stats_stats_history.csv`` records per-interval ``User Count`` and
+    ``Requests/s`` for the ``Aggregated`` row. The observed max user count and
+    the observed peak request rate are derived from that history, not from the
+    configured limit. Returns (0.0, 0.0) when the history is absent.
+    """
+    history_path = step_dir / "stats_stats_history.csv"
+    if not history_path.exists():
+        return 0.0, 0.0
+    max_users = 0.0
+    peak_rps = 0.0
+    try:
+        with history_path.open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                if row.get("Name") != "Aggregated":
+                    continue
+                try:
+                    users = float(row.get("User Count", "0") or 0)
+                    rps = float(row.get("Requests/s", "0") or 0)
+                except ValueError:
+                    continue
+                max_users = max(max_users, users)
+                peak_rps = max(peak_rps, rps)
+    except OSError:
+        return 0.0, 0.0
+    return max_users, peak_rps
 
 
 def read_authoritative_aggregate(step_dir: Path) -> dict[str, str]:
@@ -378,12 +634,19 @@ def build_result(
     max_p95_ms: float,
     max_p99_ms: float,
     min_achieved_ratio: float,
+    scenario: str = "mixed",
     custom_metrics: dict[str, int] | None = None,
     cpu_percent: float | None = None,
     memory_mb: float | None = None,
     cpu_measured: bool = False,
     memory_measured: bool = False,
     min_duration_for_stable: int = 30,
+    observed_max_users: float = 0.0,
+    observed_peak_rps: float = 0.0,
+    target_peak_rps: float = 0.0,
+    required_concurrent_users: int = 0,
+    min_peak_ratio: float = 0.0,
+    max_incomplete_ratio: float = 0.01,
 ) -> StepResult:
     custom_metrics_present = custom_metrics is not None
     custom_metrics = custom_metrics or {}
@@ -411,7 +674,7 @@ def build_result(
         violations.append("custom metrics missing or unparseable")
     else:
         # Required keys must be present; a missing/invalid key is not a zero.
-        required = (
+        required = [
             "http_2xx",
             "http_429",
             "http_422",
@@ -420,7 +683,9 @@ def build_result(
             "mask_requests",
             "demask_requests",
             "functional_errors",
-        )
+        ]
+        if scenario == "roundtrip":
+            required.append("incomplete_roundtrips")
         missing = [key for key in required if key not in custom_metrics]
         if missing:
             violations.append(f"custom metrics missing required keys: {missing}")
@@ -467,11 +732,53 @@ def build_result(
             violations.append("no successful 2xx responses: all requests were 429/errors")
         if custom_metrics.get("mask_requests", 0) <= 0:
             violations.append("no successful mask operations recorded")
+        # Strict roundtrip reconciliation for the main SLA profile.
+        # Every successful MASK must be accounted for by either a matching
+        # DEMASK or an explicitly counted incomplete pair:
+        #     MASK == DEMASK + incomplete_roundtrips
+        # A separate check limits the share of incomplete pairs; for the main
+        # SLA profile the only acceptable incomplete pairs are those cut off by
+        # the test ending, so the threshold is minimal and documented.
+        if scenario == "roundtrip":
+            mask_count = custom_metrics.get("mask_requests", 0)
+            demask_count = custom_metrics.get("demask_requests", 0)
+            incomplete = custom_metrics.get("incomplete_roundtrips", 0)
+            if mask_count == 0 and demask_count == 0:
+                violations.append("roundtrip: no MASK or DEMASK operations recorded")
+            elif mask_count != demask_count + incomplete:
+                violations.append(
+                    f"roundtrip reconciliation: MASK {mask_count} != "
+                    f"DEMASK {demask_count} + incomplete {incomplete}"
+                )
+            # The share of incomplete pairs must be minimal. For the main SLA
+            # profile only pairs interrupted by the test ending are acceptable,
+            # so a non-zero share above a tiny documented threshold is a FAIL.
+            if mask_count and incomplete / mask_count > max_incomplete_ratio:
+                violations.append(
+                    f"roundtrip incomplete pairs {incomplete} > "
+                    f"{max_incomplete_ratio:.0%} of MASK {mask_count}"
+                )
+    # Required concurrency gate: the observed max user count must reach the
+    # required concurrent users (not just the configured limit).
+    if required_concurrent_users and observed_max_users < required_concurrent_users:
+        violations.append(
+            f"observed max users {observed_max_users:.0f} < required "
+            f"{required_concurrent_users}"
+        )
+    # Peak RPS gate: the observed peak must reach a fraction of the target peak.
+    if target_peak_rps and min_peak_ratio and observed_peak_rps < target_peak_rps * min_peak_ratio:
+        violations.append(
+            f"observed peak RPS {observed_peak_rps:.1f} < "
+            f"target peak {target_peak_rps:.0f} * {min_peak_ratio:.2f}"
+        )
     if duration_seconds < min_duration_for_stable:
         violations.append(
             f"duration {duration_seconds}s < {min_duration_for_stable}s: "
             "percentiles are not stable"
         )
+    incomplete = custom_metrics.get("incomplete_roundtrips", 0)
+    mask_count = custom_metrics.get("mask_requests", 0)
+    incomplete_ratio = incomplete / mask_count if mask_count else 0.0
     return StepResult(
         target_rps=target_rps,
         achieved_rps=achieved_rps,
@@ -484,9 +791,14 @@ def build_result(
         p95_ms=p95,
         p99_ms=p99,
         users=users,
+        observed_max_users=observed_max_users,
+        observed_peak_rps=observed_peak_rps,
+        target_peak_rps=target_peak_rps,
         duration_seconds=duration_seconds,
         mask_requests=custom_metrics.get("mask_requests", 0),
         demask_requests=custom_metrics.get("demask_requests", 0),
+        incomplete_roundtrips=incomplete,
+        incomplete_ratio=incomplete_ratio,
         http_2xx=custom_metrics.get("http_2xx", 0),
         http_429=custom_metrics.get("http_429", 0),
         http_422=custom_metrics.get("http_422", 0),
@@ -525,7 +837,7 @@ def write_reports(
         f"# Performance report: {scenario}",
         "",
         "| Target RPS | Actual RPS | Ratio | avg | p50 | p95 | p99 | "
-        "MASK | DEMASK | 2xx | 429 | 422 | other | func-err | t-err | "
+        "MASK | DEMASK | Incomplete | 2xx | 429 | 422 | other | func-err | t-err | "
         "CPU% | RAM MB | dur | Errors | Result |",
         "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
         "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |",
@@ -538,12 +850,27 @@ def write_reports(
             f"| {result.target_rps:.0f} | {result.achieved_rps:.1f} | "
             f"{result.achieved_ratio:.2f} | {result.avg_ms:.1f} ms | "
             f"{result.p50_ms:.1f} ms | {result.p95_ms:.1f} ms | {result.p99_ms:.1f} ms | "
-            f"{result.mask_requests} | {result.demask_requests} | {result.http_2xx} | "
+            f"{result.mask_requests} | {result.demask_requests} | "
+            f"{result.incomplete_roundtrips} | {result.http_2xx} | "
             f"{result.http_429} | {result.http_422} | {result.http_other} | "
             f"{result.functional_errors} | {result.transport_errors} | "
             f"{cpu} | {mem} | "
             f"{result.duration_seconds}s | "
             f"{result.error_rate_percent:.2f}% | {status} |"
+        )
+    # Concurrency / peak summary block.
+    lines.append("")
+    lines.append("## Concurrency and peak")
+    lines.append("")
+    lines.append(
+        "| configured_max_users | observed_max_users | target_peak_rps | "
+        "observed_peak_rps |"
+    )
+    lines.append("| ---: | ---: | ---: | ---: |")
+    for result in results:
+        lines.append(
+            f"| {result.users} | {result.observed_max_users:.0f} | "
+            f"{result.target_peak_rps:.0f} | {result.observed_peak_rps:.1f} |"
         )
     (output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -560,7 +887,7 @@ def main() -> int:
         "(incompatible with --targets).",
     )
     parser.add_argument("--targets", default=None)
-    parser.add_argument("--scenario", choices=SUPPORTED_SCENARIOS, default="mixed")
+    parser.add_argument("--scenario", choices=SUPPORTED_SCENARIOS, default="roundtrip")
     parser.add_argument("--duration", type=int, default=60)
     parser.add_argument("--min-duration-for-stable", type=int, default=30)
     parser.add_argument("--rps-per-user", type=float, default=10.0)
@@ -570,6 +897,9 @@ def main() -> int:
     parser.add_argument("--max-p95-ms", type=float, default=200.0)
     parser.add_argument("--max-p99-ms", type=float, default=500.0)
     parser.add_argument("--min-achieved-ratio", type=float, default=0.9)
+    parser.add_argument("--required-concurrent-users", type=int, default=0)
+    parser.add_argument("--min-peak-ratio", type=float, default=0.0)
+    parser.add_argument("--max-incomplete-ratio", type=float, default=0.01)
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -583,6 +913,12 @@ def main() -> int:
         parser.error("duration, rps-per-user, and spawn-rate must be positive")
     if args.max_users <= 0:
         parser.error("max-users must be positive")
+    if args.required_concurrent_users < 0:
+        parser.error("required-concurrent-users must be non-negative")
+    if not 0 <= args.min_peak_ratio <= 1:
+        parser.error("min-peak-ratio must be in [0, 1]")
+    if not 0 <= args.max_incomplete_ratio <= 1:
+        parser.error("max-incomplete-ratio must be in [0, 1]")
     if args.profile == "organizer" and args.targets is not None:
         parser.error("--targets cannot be used with --profile organizer")
     if args.profile == "organizer" and args.max_users > ORGANIZER_HARD_MAX_USERS:
@@ -624,6 +960,7 @@ def main() -> int:
             if exit_code == 0:
                 exit_code = 2
         custom_metrics = read_custom_metrics(step_dir / "custom_metrics.json")
+        observed_max_users, observed_peak_rps = read_history_metrics(step_dir)
         result = build_result(
             aggregate,
             target_rps=target,
@@ -634,12 +971,19 @@ def main() -> int:
             max_p95_ms=args.max_p95_ms,
             max_p99_ms=args.max_p99_ms,
             min_achieved_ratio=args.min_achieved_ratio,
+            scenario=args.scenario,
             custom_metrics=custom_metrics,
             cpu_percent=avg_cpu if cpu_measured else None,
             memory_mb=avg_mem if mem_measured else None,
             cpu_measured=cpu_measured,
             memory_measured=mem_measured,
             min_duration_for_stable=args.min_duration_for_stable,
+            observed_max_users=observed_max_users,
+            observed_peak_rps=observed_peak_rps,
+            target_peak_rps=target,
+            required_concurrent_users=args.required_concurrent_users,
+            min_peak_ratio=args.min_peak_ratio,
+            max_incomplete_ratio=args.max_incomplete_ratio,
         )
         results.append(result)
         write_reports(args.output_dir, args.scenario, results)
@@ -663,6 +1007,7 @@ def _run_organizer(args: argparse.Namespace) -> int:
         args.rps_per_user,
         args.max_users,
         args.output_dir,
+        args.required_concurrent_users,
     )
     try:
         aggregate = read_authoritative_aggregate(args.output_dir)
@@ -672,6 +1017,7 @@ def _run_organizer(args: argparse.Namespace) -> int:
         if exit_code == 0:
             exit_code = 2
     custom_metrics = read_custom_metrics(args.output_dir / "custom_metrics.json")
+    observed_max_users, observed_peak_rps = read_history_metrics(args.output_dir)
     result = build_result(
         aggregate,
         target_rps=ORGANIZER_TARGET_AVERAGE,
@@ -682,22 +1028,36 @@ def _run_organizer(args: argparse.Namespace) -> int:
         max_p95_ms=args.max_p95_ms,
         max_p99_ms=args.max_p99_ms,
         min_achieved_ratio=args.min_achieved_ratio,
+        scenario=args.scenario,
         custom_metrics=custom_metrics,
         cpu_percent=avg_cpu if cpu_measured else None,
         memory_mb=avg_mem if mem_measured else None,
         cpu_measured=cpu_measured,
         memory_measured=mem_measured,
         min_duration_for_stable=args.min_duration_for_stable,
+        observed_max_users=observed_max_users,
+        observed_peak_rps=observed_peak_rps,
+        target_peak_rps=1000.0,
+        required_concurrent_users=args.required_concurrent_users,
+        min_peak_ratio=args.min_peak_ratio,
+        max_incomplete_ratio=args.max_incomplete_ratio,
     )
     profile = {
         "name": "organizer",
         "duration_seconds": ORGANIZER_DURATION,
         "target_average_rps": ORGANIZER_TARGET_AVERAGE,
-        "max_users": args.max_users,
+        "target_peak_rps": 1000.0,
+        "configured_max_users": args.max_users,
+        "observed_max_users": observed_max_users,
+        "observed_peak_rps": observed_peak_rps,
         "rps_per_user": args.rps_per_user,
         "phases": list(ORGANIZER_PHASES),
         "actual_average_rps": result.achieved_rps,
         "target_vs_actual_delta": result.achieved_rps - ORGANIZER_TARGET_AVERAGE,
+        "environment": collect_environment(),
+        "docker_metrics": collect_docker_metrics(),
+        "stage_timings": collect_stage_timings(args.host),
+        "run_command": " ".join(sys.argv),
     }
     write_reports(args.output_dir, args.scenario, [result], profile=profile)
     print(json.dumps(asdict(result), ensure_ascii=False))
