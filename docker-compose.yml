@@ -7,7 +7,7 @@ services:
       - APP_ENV=development
       - RESTORATION_TTL_SECONDS=3600
       - RESTORATION_STORE_BACKEND=redis
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       # Must be set and identical across workers. Generate with:
       # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
       - MASKING_KEY=${MASKING_KEY:?MASKING_KEY must be set}
@@ -21,13 +21,12 @@ services:
   redis:
     image: redis:7-alpine
     # Redis is not exposed to the host; only the api service reaches it.
-    # For auth, pass a password via REDIS_PASSWORD and use
-    # redis://:${REDIS_PASSWORD}@redis:6379/0 in the api REDIS_URL.
-    command: ["redis-server", "--appendonly", "yes"]
+    # The password is required and never logged; only encrypted state is stored.
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
     environment:
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "$$REDIS_PASSWORD", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5

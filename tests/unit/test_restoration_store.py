@@ -118,3 +118,25 @@ def test_state_json_roundtrip() -> None:
     assert restored.mappings == [("****", "secret")]
     assert restored.entity_count == 1
     assert restored.state == RestorationStateStatus.MASKED
+
+
+def test_consumer_id_roundtrip_memory() -> None:
+    store = InMemoryRestorationStore()
+    state = _state("abc")
+    state.consumer_id = "consumer-1"
+    store.save("abc", state)
+    restored = store.get("abc")
+    assert restored is not None
+    assert restored.consumer_id == "consumer-1"
+
+
+def test_old_record_without_consumer_id_reads_as_empty() -> None:
+    state = _state("abc")
+    raw = state.to_json()
+    # Simulate an older record that predates the consumer_id field.
+    import json
+
+    data = json.loads(raw)
+    data.pop("consumer_id", None)
+    restored = RestorationState.from_json("abc", json.dumps(data))
+    assert restored.consumer_id == ""

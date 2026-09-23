@@ -27,6 +27,7 @@ class RestorationState:
     state: RestorationStateStatus = RestorationStateStatus.MASKED
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     expires_at: datetime | None = None
+    consumer_id: str = ""
 
     @property
     def expired(self) -> bool:
@@ -51,6 +52,8 @@ class RestorationState:
         if data.get("expires_at"):
             data["expires_at"] = datetime.fromisoformat(data["expires_at"])
         data["payload_id"] = payload_id
+        # Backwards compatibility: older records may lack consumer_id.
+        data.setdefault("consumer_id", "")
         # JSON has no tuples; restore mappings as (replacement, original) pairs.
         data["mappings"] = [tuple(pair) for pair in data.get("mappings", [])]
         return cls(**data)

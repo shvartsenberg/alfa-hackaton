@@ -51,6 +51,13 @@ class InMemoryRestorationStore(RestorationStore):
         key = masking_key or os.environ.get("MASKING_KEY")
         if key:
             return Fernet(key.encode("utf-8"))
+        if os.environ.get("APP_ENV", "development").lower() == "production":
+            # In production a missing key would make state unrecoverable across
+            # restarts; fail fast at startup instead of on the first request.
+            raise RuntimeError(
+                "MASKING_KEY must be set when APP_ENV=production; refusing to "
+                "generate a random key that would be unrecoverable across restarts"
+            )
         generated = Fernet.generate_key()
         logger.warning(
             "MASKING_KEY not set; generated a random Fernet key at startup. "
