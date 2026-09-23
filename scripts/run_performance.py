@@ -28,6 +28,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -422,32 +423,36 @@ def check_health(host: str, timeout_seconds: float = 5.0) -> None:
 def _parse_host_port(host: str) -> tuple[str, int] | None:
     """Extract ``(host, port)`` from a base URL like ``http://localhost:8000``.
 
-    Returns ``None`` when the port cannot be determined (e.g. a non-http scheme
-    or a missing port). Used to scope connection sampling to the target server.
+    Uses ``urllib.parse.urlsplit`` so userinfo, IPv6 literals, and path/query
+    are handled safely. Returns ``None`` when the port cannot be determined
+    (e.g. a non-http scheme or a missing port). Used to scope connection
+    sampling to the target server.
     """
-    if "://" not in host:
+    try:
+        parsed = urllib.parse.urlsplit(host)
+    except ValueError:
         return None
-    scheme, _, rest = host.partition("://")
-    if "@" in rest:
-        rest = rest.rsplit("@", 1)[1]
-    # Drop path/query/fragment.
-    for sep in ("/", "?", "#"):
-        if sep in rest:
-            rest = rest.split(sep, 1)[0]
-    if ":" in rest:
-        hostname, _, port_str = rest.rpartition(":")
-        if not hostname:
-            return None
-        try:
-            port = int(port_str)
-        except ValueError:
-            return None
-        return hostname, port
-    # Default ports for common schemes.
-    default_port = {"http": 80, "https": 443}.get(scheme)
-    if default_port is None:
+    if parsed.scheme not in ("http", "https"):
         return None
-    return rest, default_port
+    hostname = parsed.hostname
+    if not hostname:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        # Non-numeric port (e.g. http://localhost:abc) cannot be resolved.
+        return None
+    if port is None:
+        port = {"http": 80, "https": 443}.get(parsed.scheme)
+    if port is None:
+        return None
+    return hostname, port
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    """Return True when ``hostname`` is a loopback host or IP literal."""
+    lowered = hostname.lower()
+    return lowered in ("localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1")
 
 
 def _sample_connections(
@@ -464,6 +469,11 @@ def _sample_connections(
     when the count could not be determined (psutil missing, PermissionError,
     NoSuchProcess, or target unknown). Returns ``True`` if at least one numeric
     sample was recorded.
+
+    A connection matches only when its remote address equals the target host, or
+    when the target is a loopback host and the remote address is a loopback IP
+    (``127.0.0.1``/``::1``). A loopback IP is never accepted for a non-loopback
+    target, so a local connection cannot be miscounted against a remote server.
     """
     if target is None:
         return False
@@ -476,6 +486,7 @@ def _sample_connections(
     except psutil.NoSuchProcess:
         return False
     target_host, target_port = target
+    target_is_loopback = _is_loopback_host(target_host)
     while not stop.is_set():
         try:
             conns = proc.net_connections(kind="tcp")
@@ -490,8 +501,10 @@ def _sample_connections(
             raddr = conn.raddr
             if raddr is None:
                 continue
-            if raddr.port == target_port and (
-                raddr.ip == target_host or raddr.ip in ("127.0.0.1", "::1")
+            if raddr.port != target_port:
+                continue
+            if raddr.ip == target_host or (
+                target_is_loopback and raddr.ip in ("127.0.0.1", "::1")
             ):
                 count += 1
         samples.append(count)
@@ -701,6 +714,26 @@ def _finalize_docker_samples(
         docker_samples.append({"unavailable": True, "incomplete": True})
 
 
+def _finalize_connection_samples(
+    conn_sampler: threading.Thread,
+    stop: threading.Event,
+    conn_samples: list[int | None],
+) -> bool:
+    """Stop and join the connection sampler, guarding against a sampling race.
+
+    The sampler may still be mid-``net_connections()`` call when the run ends.
+    ``stop`` is set and the thread is joined with a short timeout. Returns
+    ``True`` when the sampler finished cleanly, ``False`` when it was still alive
+    after the join. When it did not finish, the caller MUST discard any partial
+    samples and report connections as unavailable (``connections_measured=False``,
+    ``observed_peak_connections=None``), because a partial peak from a
+    still-running sampler is not trustworthy.
+    """
+    stop.set()
+    conn_sampler.join(timeout=2.0)
+    return not conn_sampler.is_alive()
+
+
 def run_step(
     host: str,
     target_rps: float,
@@ -778,14 +811,18 @@ def run_step(
         stop.set()
         sampler.join(timeout=2.0)
         _finalize_docker_samples(docker_sampler, stop, docker_samples)
-        conn_sampler.join(timeout=2.0)
+        conn_completed = _finalize_connection_samples(conn_sampler, stop, conn_samples)
     measured = bool(samples)
     avg_cpu = sum(s[0] for s in samples) / len(samples) if samples else 0.0
     avg_mem = sum(s[1] for s in samples) / len(samples) if samples else 0.0
     peak_cpu = max((s[0] for s in samples), default=0.0)
     peak_mem = max((s[1] for s in samples), default=0.0)
     docker_peak = _docker_peak(docker_samples)
-    conn_measured, conn_peak = _connection_peak(conn_samples)
+    if conn_completed:
+        conn_measured, conn_peak = _connection_peak(conn_samples)
+    else:
+        # The sampler did not finish; a partial peak is not trustworthy.
+        conn_measured, conn_peak = False, None
     return (
         returncode,
         avg_cpu,
@@ -881,14 +918,18 @@ def run_organizer_profile(
         stop.set()
         sampler.join(timeout=2.0)
         _finalize_docker_samples(docker_sampler, stop, docker_samples)
-        conn_sampler.join(timeout=2.0)
+        conn_completed = _finalize_connection_samples(conn_sampler, stop, conn_samples)
     measured = bool(samples)
     avg_cpu = sum(s[0] for s in samples) / len(samples) if samples else 0.0
     avg_mem = sum(s[1] for s in samples) / len(samples) if samples else 0.0
     peak_cpu = max((s[0] for s in samples), default=0.0)
     peak_mem = max((s[1] for s in samples), default=0.0)
     docker_peak = _docker_peak(docker_samples)
-    conn_measured, conn_peak = _connection_peak(conn_samples)
+    if conn_completed:
+        conn_measured, conn_peak = _connection_peak(conn_samples)
+    else:
+        # The sampler did not finish; a partial peak is not trustworthy.
+        conn_measured, conn_peak = False, None
     return (
         returncode,
         avg_cpu,

@@ -197,10 +197,10 @@ The following were executed and passed on this machine:
   types, etc.), none of which are in the files changed here. The test files are
   intentionally excluded from the CI typecheck; this is documented, not claimed
   as passing.
-- `pytest` — **162 passed, 1 skipped, 104 deselected** (default run excludes
+- `pytest` — **162 passed, 1 skipped, 109 deselected** (default run excludes
   `concurrency`/`slow`/`performance`).
 - `pytest -m concurrency` — **9 passed**.
-- `pytest -m performance` — **93 passed** (runs
+- `pytest -m performance` — **98 passed** (runs
   `tests/performance/test_performance_qa.py`, now marked with the `performance`
   marker).
 - `python -m benchmarks.score` — OK after merging `main`: overall F1 0.995,

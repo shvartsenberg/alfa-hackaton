@@ -27,6 +27,7 @@ from scripts.run_performance import (
     _connection_peak,
     _container_id_matches,
     _docker_peak,
+    _finalize_connection_samples,
     _finalize_docker_samples,
     _parse_host_port,
     _sample_connections,
@@ -1852,6 +1853,71 @@ def test_finalize_docker_samples_does_not_mark_when_thread_finishes() -> None:
     assert stop.is_set()
 
 
+def test_finalize_connection_samples_returns_false_when_thread_alive() -> None:
+    import threading
+
+    stop = threading.Event()
+    samples: list[int | None] = [5]
+
+    class _NeverEnding(threading.Thread):
+        def join(self, timeout=None):  # type: ignore[override]
+            return None
+
+        def is_alive(self) -> bool:
+            return True
+
+    completed = _finalize_connection_samples(_NeverEnding(), stop, samples)
+    # The sampler did not finish, so the caller must treat connections as
+    # unavailable. The samples list is left untouched (the caller decides).
+    assert completed is False
+    assert samples == [5]
+    assert stop.is_set()
+
+
+def test_finalize_connection_samples_returns_true_when_thread_finishes() -> None:
+    import threading
+
+    stop = threading.Event()
+    samples: list[int | None] = [5]
+
+    class _Quick(threading.Thread):
+        def join(self, timeout=None):  # type: ignore[override]
+            return None
+
+        def is_alive(self) -> bool:
+            return False
+
+    completed = _finalize_connection_samples(_Quick(), stop, samples)
+    assert completed is True
+    assert samples == [5]
+    assert stop.is_set()
+
+
+def test_connection_result_is_unavailable_when_sampler_does_not_finish() -> None:
+    # Regression: even if old samples contain a numeric peak (5), a sampler that
+    # is still alive after the join must NOT yield a partial peak. The final
+    # result must be connections_measured=False, observed_peak_connections=None.
+    import threading
+
+    stop = threading.Event()
+    samples: list[int | None] = [5]
+
+    class _NeverEnding(threading.Thread):
+        def join(self, timeout=None):  # type: ignore[override]
+            return None
+
+        def is_alive(self) -> bool:
+            return True
+
+    completed = _finalize_connection_samples(_NeverEnding(), stop, samples)
+    if completed:
+        conn_measured, conn_peak = _connection_peak(samples)
+    else:
+        conn_measured, conn_peak = False, None
+    assert conn_measured is False
+    assert conn_peak is None
+
+
 # --- operator-declared server config ----------------------------------------
 
 
@@ -1970,10 +2036,26 @@ def test_parse_host_port_extracts_host_and_port() -> None:
     assert _parse_host_port("http://127.0.0.1:18099") == ("127.0.0.1", 18099)
     # Default port for http when omitted.
     assert _parse_host_port("http://example.com") == ("example.com", 80)
-    # A URL with an explicit port is extracted regardless of scheme.
-    assert _parse_host_port("redis://localhost:6379") == ("localhost", 6379)
+    # Userinfo is stripped safely.
+    assert _parse_host_port("http://user:pass@example.com:8080") == ("example.com", 8080)
+    # IPv6 literal is parsed safely.
+    assert _parse_host_port("http://[::1]:8000") == ("::1", 8000)
+    # Non-http schemes are not valid HTTP targets for connection sampling.
+    assert _parse_host_port("redis://localhost:6379") is None
+    # A non-numeric port cannot be resolved.
+    assert _parse_host_port("http://localhost:abc") is None
     # Malformed input returns None.
     assert _parse_host_port("not a url") is None
+
+
+def test_is_loopback_host() -> None:
+    from scripts.run_performance import _is_loopback_host
+
+    assert _is_loopback_host("localhost") is True
+    assert _is_loopback_host("127.0.0.1") is True
+    assert _is_loopback_host("::1") is True
+    assert _is_loopback_host("10.0.0.5") is False
+    assert _is_loopback_host("example.com") is False
 
 
 def test_connection_peak_returns_measured_and_peak() -> None:
@@ -2034,6 +2116,41 @@ def test_sample_connections_counts_only_established_to_target(
     thread.join(timeout=2.0)
     # Only the two ESTABLISHED connections to 127.0.0.1:8000 are counted.
     assert samples == [2]
+
+
+def test_sample_connections_does_not_count_loopback_for_remote_target(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    import threading
+    import time
+
+    class _Conn:
+        def __init__(self, status, ip, port):
+            self.status = status
+            self.raddr = type("R", (), {"ip": ip, "port": port})()
+
+    class _FakeProc:
+        def net_connections(self, kind="tcp"):
+            return [
+                _Conn("ESTABLISHED", "127.0.0.1", 8000),  # loopback, wrong target
+                _Conn("ESTABLISHED", "10.0.0.5", 8000),  # matches target
+            ]
+
+    monkeypatch.setattr("psutil.Process", lambda pid: _FakeProc())
+    stop = threading.Event()
+    samples: list[int | None] = []
+    thread = threading.Thread(
+        target=_sample_connections,
+        args=(123, stop, ("10.0.0.5", 8000), samples),
+        daemon=True,
+    )
+    thread.start()
+    time.sleep(0.2)
+    stop.set()
+    thread.join(timeout=2.0)
+    # The loopback connection to 127.0.0.1:8000 must NOT be counted against the
+    # remote target 10.0.0.5:8000; only the matching remote connection counts.
+    assert samples == [1]
 
 
 def test_sample_connections_records_none_on_access_denied(
