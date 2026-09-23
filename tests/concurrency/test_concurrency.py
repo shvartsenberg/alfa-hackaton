@@ -12,6 +12,7 @@ Run with:
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -19,6 +20,8 @@ from threading import Barrier
 import pytest
 
 from app.core.exceptions import InvalidPayloadError
+from app.core.models import DetectionContext, PIIEntity
+from app.detection.base import PIIDetector
 from app.detection.context.resolver import ContextResolver
 from app.detection.engine import DetectionEngine
 from app.detection.regex.detector import RegexDetector
@@ -32,9 +35,23 @@ ORIGINAL = "Напишите мне на test@example.com или +7 999 123-45-6
 CONSUMERS_DIR = Path(__file__).resolve().parents[2] / "configs" / "consumers"
 
 
-def _build_service() -> ProcessService:
+class _SlowDetector(PIIDetector):
+    """Wraps the regex detector and adds a fixed delay to simulate heavy work."""
+
+    name = "slow"
+
+    def __init__(self, delay_seconds: float) -> None:
+        self._delay = delay_seconds
+        self._inner = RegexDetector()
+
+    def detect(self, text: str, context: DetectionContext) -> list[PIIEntity]:
+        time.sleep(self._delay)
+        return self._inner.detect(text, context)
+
+
+def _build_service(delay_seconds: float = 0.0) -> ProcessService:
     detection = DetectionEngine(
-        detectors=[RegexDetector()],
+        detectors=[_SlowDetector(delay_seconds)],
         context_resolver=ContextResolver(),
     )
     masking = MaskingEngine(DefaultMaskingStrategyFactory())
@@ -136,3 +153,25 @@ def test_concurrent_different_payloads_with_same_id_do_not_overwrite_state() -> 
     winning_original, winning_mask = successful[0]
     assert winning_mask is not None
     assert service.process(winning_mask, "conc-conflict", policy).result == winning_original
+
+
+@pytest.mark.concurrency
+def test_parallel_masks_are_not_serialized_on_one_lock() -> None:
+    """Detection/masking for distinct payload_ids must run concurrently.
+
+    With a 50 ms detector, 8 parallel requests should finish well under the
+    400 ms a fully serialized run would take.
+    """
+    service = _build_service(delay_seconds=0.05)
+    policy = FilePolicyProvider(CONSUMERS_DIR).get_policy("default")
+
+    def mask_once(i: int) -> str:
+        return service.process(ORIGINAL, f"conc-par-{i}", policy).result
+
+    started = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(mask_once, range(8)))
+    elapsed_ms = (time.perf_counter() - started) * 1000
+
+    assert len(results) == 8
+    assert elapsed_ms < 200

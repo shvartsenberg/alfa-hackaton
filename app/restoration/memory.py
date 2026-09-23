@@ -30,6 +30,11 @@ from app.restoration.models import RestorationState
 
 logger = logging.getLogger("pii_security_proxy.restoration.memory")
 
+# Number of per-key stripes used to serialize transitions. Transitions for
+# different payload_ids hash to different stripes and run concurrently, so the
+# expensive callback (detection + masking) is not serialized on a single lock.
+_STRIPE_COUNT = 256
+
 
 class InMemoryRestorationStore(RestorationStore):
     """Thread-safe in-memory store with TTL eviction and Fernet encryption."""
@@ -44,6 +49,7 @@ class InMemoryRestorationStore(RestorationStore):
         self._max_entries = max_entries
         self._data: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
         self._lock = threading.Lock()
+        self._stripes = [threading.Lock() for _ in range(_STRIPE_COUNT)]
         self._fernet = self._build_fernet(masking_key)
 
     @staticmethod
@@ -94,32 +100,38 @@ class InMemoryRestorationStore(RestorationStore):
     def transition(
         self, payload_id: str, fn: TransitionFn
     ) -> RestorationState | None:
-        with self._lock:
-            self._evict_expired_locked()
-            entry = self._data.get(payload_id)
-            current: RestorationState | None = None
-            if entry is not None:
-                expires_at, encrypted = entry
-                if time.monotonic() < expires_at:
-                    raw = self._fernet.decrypt(encrypted).decode("utf-8")
-                    current = RestorationState.from_json(payload_id, raw)
-                else:
-                    del self._data[payload_id]
+        stripe = self._stripes[hash(payload_id) % _STRIPE_COUNT]
+        with stripe:
+            with self._lock:
+                self._evict_expired_locked()
+                entry = self._data.get(payload_id)
+                current: RestorationState | None = None
+                if entry is not None:
+                    expires_at, encrypted = entry
+                    if time.monotonic() < expires_at:
+                        raw = self._fernet.decrypt(encrypted).decode("utf-8")
+                        current = RestorationState.from_json(payload_id, raw)
+                    else:
+                        del self._data[payload_id]
+            # The callback runs outside the data lock so expensive work (e.g.
+            # detection + masking) is not serialized across all payload_ids.
+            # The stripe lock still guarantees per-key atomicity.
             new_state = fn(current)
-            if new_state is None:
-                self._data.pop(payload_id, None)
-                return None
-            if payload_id not in self._data and len(self._data) >= self._max_entries:
-                raise ServiceOverloadedError(
-                    "restoration store capacity exceeded",
-                    retry_after=1,
-                )
-            if payload_id in self._data:
-                self._data.move_to_end(payload_id)
-            expires_at = time.monotonic() + self._ttl_seconds
-            encrypted = self._fernet.encrypt(new_state.to_json().encode("utf-8"))
-            self._data[payload_id] = (expires_at, encrypted)
-            return new_state
+            with self._lock:
+                if new_state is None:
+                    self._data.pop(payload_id, None)
+                    return None
+                if payload_id not in self._data and len(self._data) >= self._max_entries:
+                    raise ServiceOverloadedError(
+                        "restoration store capacity exceeded",
+                        retry_after=1,
+                    )
+                if payload_id in self._data:
+                    self._data.move_to_end(payload_id)
+                expires_at = time.monotonic() + self._ttl_seconds
+                encrypted = self._fernet.encrypt(new_state.to_json().encode("utf-8"))
+                self._data[payload_id] = (expires_at, encrypted)
+                return new_state
 
     def _evict_expired_locked(self) -> None:
         now = time.monotonic()

@@ -7,8 +7,10 @@ once at startup and injected into handlers.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Annotated
 
 import httpx
+from fastapi import Header
 
 from app.config.settings import get_settings
 from app.core.ratelimit import SlidingWindowRateLimiter
@@ -118,8 +120,10 @@ def get_process_service() -> ProcessService:
     )
 
 
-def get_default_consumer_id() -> str:
-    return get_settings().default_consumer_id
+def get_consumer_id(
+    x_consumer_id: Annotated[str | None, Header()] = None,
+) -> str:
+    return x_consumer_id or get_settings().default_consumer_id
 
 
 @lru_cache
