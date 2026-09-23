@@ -156,6 +156,7 @@ def run_step(
     output_dir: Path,
 ) -> tuple[int, float, float, bool, bool]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    reset_step_outputs(output_dir)
     csv_prefix = output_dir / "stats"
     custom_metrics_path = output_dir / "custom_metrics.json"
     command = [
@@ -231,6 +232,7 @@ def run_organizer_profile(
     measured).
     """
     output_dir.mkdir(parents=True, exist_ok=True)
+    reset_step_outputs(output_dir)
     csv_prefix = output_dir / "stats"
     custom_metrics_path = output_dir / "custom_metrics.json"
     command = [
@@ -292,6 +294,42 @@ def read_aggregate(stats_path: Path) -> dict[str, str]:
         if row.get("Name") == "Aggregated":
             return row
     raise RuntimeError(f"Aggregated row not found in {stats_path}")
+
+
+def read_authoritative_aggregate(step_dir: Path) -> dict[str, str]:
+    """Return the authoritative final aggregate for a step.
+
+    Locust's periodic ``--csv`` writer can leave ``stats_stats.csv`` as a stale
+    snapshot that disagrees with the final console table and the custom metrics.
+    The locustfile writes ``final_stats.csv`` from ``environment.stats`` on the
+    ``test_stop`` event; that file is authoritative. If it is missing, the step
+    must FAIL rather than silently trust a stale periodic CSV, so this raises.
+    """
+    final_path = step_dir / "final_stats.csv"
+    if not final_path.exists():
+        raise RuntimeError(
+            f"authoritative final_stats.csv missing in {step_dir}; "
+            "cannot validate counters against a possibly-stale periodic CSV"
+        )
+    return read_aggregate(final_path)
+
+
+def reset_step_outputs(output_dir: Path) -> None:
+    """Invalidate per-run outputs before a fresh Locust run.
+
+    A rerun into the same ``output_dir`` must not mistake the previous run's
+    ``final_stats.csv`` or ``custom_metrics.json`` for new data. Both are removed
+    before the run starts; the authoritative aggregate is only recreated by the
+    locustfile's ``test_stop`` listener, so a missing file after the run is a
+    hard failure rather than a silent reuse of stale data.
+
+    A failure to remove a stale file is NOT suppressed: if it cannot be deleted,
+    the run must abort rather than risk accepting stale artifacts as a false
+    PASS.
+    """
+    for name in ("final_stats.csv", "custom_metrics.json"):
+        path = output_dir / name
+        path.unlink(missing_ok=True)
 
 
 def read_custom_metrics(path: Path) -> dict[str, int] | None:
@@ -578,9 +616,8 @@ def main() -> int:
             args.scenario,
             step_dir,
         )
-        stats_path = step_dir / "stats_stats.csv"
         try:
-            aggregate = read_aggregate(stats_path)
+            aggregate = read_authoritative_aggregate(step_dir)
         except (OSError, RuntimeError) as exc:
             print(f"Locust statistics unavailable: {exc}", file=sys.stderr)
             aggregate = empty_aggregate()
@@ -627,9 +664,8 @@ def _run_organizer(args: argparse.Namespace) -> int:
         args.max_users,
         args.output_dir,
     )
-    stats_path = args.output_dir / "stats_stats.csv"
     try:
-        aggregate = read_aggregate(stats_path)
+        aggregate = read_authoritative_aggregate(args.output_dir)
     except (OSError, RuntimeError) as exc:
         print(f"Locust statistics unavailable: {exc}", file=sys.stderr)
         aggregate = empty_aggregate()

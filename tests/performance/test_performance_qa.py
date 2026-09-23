@@ -25,6 +25,7 @@ from scripts.run_performance import (
     ORGANIZER_TARGET_AVERAGE,
     build_result,
     check_health,
+    read_authoritative_aggregate,
     read_custom_metrics,
 )
 from tests.performance import locustfile
@@ -357,6 +358,137 @@ def test_read_custom_metrics_distinguishes_missing_from_zero(tmp_path: Path) -> 
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     assert read_custom_metrics(bad) is None
+
+
+# --- authoritative final_stats.csv (stale periodic CSV defect) -------------
+
+
+def test_read_authoritative_aggregate_prefers_final_stats(tmp_path: Path) -> None:
+    # The periodic stats_stats.csv may be a stale snapshot (e.g. 137093) that
+    # disagrees with the final console table and custom metrics (137231). The
+    # runner must use final_stats.csv, written from environment.stats on
+    # test_stop, as the authoritative aggregate.
+    stale = tmp_path / "stats_stats.csv"
+    stale.write_text(
+        "Type,Name,Request Count,Failure Count,Requests/s,50%,95%,99%\n"
+        ",Aggregated,137093,0,285.7,15,200,220\n",
+        encoding="utf-8",
+    )
+    final = tmp_path / "final_stats.csv"
+    final.write_text(
+        "Type,Name,Request Count,Failure Count,Requests/s,50%,95%,99%\n"
+        ",Aggregated,137231,0,285.8,15,200,220\n",
+        encoding="utf-8",
+    )
+    aggregate = read_authoritative_aggregate(tmp_path)
+    assert aggregate["Request Count"] == "137231"
+
+
+def test_read_authoritative_aggregate_missing_final_raises(tmp_path: Path) -> None:
+    # If final_stats.csv is absent, the runner must NOT fall back to a possibly
+    # stale periodic CSV for a PASS; it must raise so the step fails.
+    stale = tmp_path / "stats_stats.csv"
+    stale.write_text(
+        "Type,Name,Request Count,Failure Count,Requests/s,50%,95%,99%\n"
+        ",Aggregated,137093,0,285.7,15,200,220\n",
+        encoding="utf-8",
+    )
+    try:
+        read_authoritative_aggregate(tmp_path)
+    except RuntimeError as exc:
+        assert "final_stats.csv missing" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError when final_stats.csv is missing")
+
+
+def test_write_final_stats_csv_exports_environment_stats(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    # The test_stop listener must export the live environment.stats to
+    # final_stats.csv via the public StatsCSV.requests_csv API, so the runner
+    # reconciles against the same final numbers the console table shows. This
+    # exercises our own listener (not just the Locust library) by pointing
+    # CUSTOM_METRICS_PATH at a temp dir and invoking it with a fake environment.
+    import csv as _csv
+
+    class _FakeStatsEntry:
+        method = "POST"
+        name = "Aggregated"
+        num_requests = 137231
+        num_failures = 0
+        median_response_time = 15
+        avg_response_time = 44.0
+        min_response_time = 1
+        max_response_time = 500
+        avg_content_length = 1576
+        total_rps = 285.8
+        total_fail_per_sec = 0.0
+
+        def get_response_time_percentile(self, p: float) -> float:  # type: ignore[no-untyped-def]
+            return {0.5: 15.0, 0.95: 200.0, 0.99: 220.0}.get(p, 0.0)
+
+    class _FakeStats:
+        entries = {}
+        total = _FakeStatsEntry()
+
+    class _FakeEnvironment:
+        stats = _FakeStats()
+
+    custom_path = tmp_path / "custom_metrics.json"
+    monkeypatch.setattr(locustfile, "CUSTOM_METRICS_PATH", str(custom_path))
+    locustfile._write_final_stats_csv(_FakeEnvironment())
+
+    final_path = tmp_path / "final_stats.csv"
+    assert final_path.exists()
+    rows = list(_csv.DictReader(final_path.open(newline="", encoding="utf-8")))
+    assert rows[0]["Name"] == "Aggregated"
+    assert rows[0]["Request Count"] == "137231"
+    assert rows[0]["Failure Count"] == "0"
+    # No temporary file may be left behind after a successful atomic write.
+    assert not (tmp_path / "final_stats.csv.tmp").exists()
+
+
+def test_reset_step_outputs_removes_stale_files(tmp_path: Path) -> None:
+    # A rerun into the same output_dir must not mistake the previous run's
+    # final_stats.csv / custom_metrics.json for new data.
+    from scripts import run_performance
+
+    stale_final = tmp_path / "final_stats.csv"
+    stale_final.write_text("stale", encoding="utf-8")
+    stale_custom = tmp_path / "custom_metrics.json"
+    stale_custom.write_text("{}", encoding="utf-8")
+    keep = tmp_path / "stats_stats.csv"
+    keep.write_text("periodic", encoding="utf-8")
+
+    run_performance.reset_step_outputs(tmp_path)
+
+    assert not stale_final.exists()
+    assert not stale_custom.exists()
+    # The periodic CSV is a sidecar and is intentionally left in place.
+    assert keep.exists()
+
+
+def test_reset_step_outputs_aborts_on_unlink_failure(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    # If a stale final_stats.csv cannot be removed, the run must abort rather
+    # than risk accepting a stale artifact as a false PASS. The OSError must
+    # propagate, not be suppressed.
+    from scripts import run_performance
+
+    stale_final = tmp_path / "final_stats.csv"
+    stale_final.write_text("stale", encoding="utf-8")
+
+    def _boom_unlink(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(Path, "unlink", _boom_unlink)
+    try:
+        run_performance.reset_step_outputs(tmp_path)
+    except OSError as exc:
+        assert "permission denied" in str(exc)
+    else:
+        raise AssertionError("expected OSError to propagate from reset_step_outputs")
 
 
 def test_unmeasured_cpu_and_memory_are_unknown_not_fail() -> None:

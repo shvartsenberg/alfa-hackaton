@@ -143,17 +143,27 @@ These are local-dataset results, not a claim about hidden organizer data.
   incompatible with `--targets`. Actual RPS/latency/status/errors come from the
   report; `summary.json` includes profile metadata (phases,
   `target_average_rps`, `actual_average_rps`, `target_vs_actual_delta`).
-  **Not verified by a real full 480s run** — implemented and covered by unit
-  tests of `target_rps_at(t)`, the shape `tick()` cap, the dynamic rate, and CLI
-  validation. A short executable smoke was run against a local app
-  (`LOAD_PROFILE=organizer`, `ORGANIZER_DURATION=5`, `ORGANIZER_MAX_USERS=5`,
-  `ORGANIZER_RPS_PER_USER=1`): exit 0, 19 requests, 0 failures, 0
-  functional/transport/429, custom `total_http_requests=19` == CSV Aggregated
-  `Request Count=19` (counters reconciled). This confirms the shape + dynamic
-  wait_time + custom-metrics-on-stop work end-to-end; it is **not** a capacity
-  or SLA result and does not replace the full 480s run. The earlier low-load
-  smoke belongs to the old scenario version and is not evidence for this
-  profile.
+  Covered by unit tests of `target_rps_at(t)`, the shape `tick()` cap, the
+  dynamic rate, and CLI validation. **Four full 480s runs were executed in
+  total: three with INFO/access logging and one quiet** against a local 1-worker
+  in-memory API (no external LLM, ≤200 users); see the dedicated section below
+  for the results and the stale-CSV defect that was found and fixed.
+- **Authoritative final stats CSV**: Locust's periodic `--csv` writer rewrites
+  `stats_stats.csv` on a timer and can be killed at test stop before it captures
+  the very last requests, leaving a stale snapshot that disagrees with the final
+  console table and the custom metrics. The locustfile now writes
+  `final_stats.csv` from `environment.stats` on the `test_stop` event (public
+  `StatsCSV.requests_csv` export), and the runner treats it as the authoritative
+  aggregate. If `final_stats.csv` is missing, the step FAILs rather than trusting
+  a possibly-stale periodic CSV. The file is written atomically (temp file +
+  replace) so a failed export leaves no partial file. The runner also removes any
+  stale `final_stats.csv`/`custom_metrics.json` from the output dir before each
+  run so a rerun cannot mistake old data for new. The periodic `stats_stats.csv`
+  is kept as a sidecar for audit. Covered by
+  `test_read_authoritative_aggregate_prefers_final_stats`,
+  `test_read_authoritative_aggregate_missing_final_raises`,
+  `test_write_final_stats_csv_exports_environment_stats`, and
+  `test_reset_step_outputs_removes_stale_files`.
 - **Redis auth**: the current `docker-compose.yml` does not enable Redis
   authentication (`redis-server` runs without `--requirepass`; `REDIS_URL` has
   no password). A compose config with a real password is a Core-owner change.
@@ -168,7 +178,7 @@ The following were executed and passed on this machine:
   installed first).
 - `ruff check .` — OK.
 - `mypy app scripts benchmarks` — OK (56 files).
-- `pytest` — **168 passed, 6 deselected** (re-verified after the latest
+- `pytest` — **173 passed, 6 deselected** (re-verified after the latest
   changes).
 - `pytest -m concurrency` — 4 passed.
 - `python -m benchmarks.score` — OK after merging `main`: overall F1 0.995,
@@ -237,4 +247,146 @@ python scripts/run_performance.py --host http://localhost:8000 \
   --targets 100,330,500,1000 --scenario mixed --duration 120
 ```
 
-No RPS/latency figure is claimed beyond the raw diagnostic observations above.
+No RPS/latency figure is claimed beyond the raw diagnostic observations above;
+this statement applies only to the old 15-second step-run diagnostic. The real
+480s organizer results are documented in the sections below.
+
+## Organizer 480s runs (single worker, in-memory store, `mixed` scenario)
+
+Three noisy full 480s `--profile organizer` runs were executed against a local
+1-worker in-memory API (`RESTORATION_STORE_BACKEND=memory`, no external LLM,
+`--max-users 200 --rps-per-user 10`). All three are **FAIL** on the RPS gate
+(actual ~283–286 RPS vs target average 330.94), and the first two also exposed a
+**stale periodic CSV** defect that was fixed. A fourth, quiet run (no
+INFO/access logging, `--rps-per-user 5`) is documented in the quiet-server
+section below.
+
+### Run 1 and Run 2 — stale periodic CSV defect (fixed)
+
+In both runs the **final console table and the custom metrics agreed exactly**,
+but the periodic `stats_stats.csv` was a stale snapshot:
+
+| Run | Console Request Count | Custom `total_http_requests` | Periodic `stats_stats.csv` | Delta |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 137231 | 137231 | 137043 | +188 |
+| 2 | 137231 | 137231 | 137093 | +138 |
+
+The custom counters were **correct** all along; the mismatch was purely a
+finalization artifact: Locust's periodic CSV writer was killed at test stop
+before capturing the last in-flight requests. The `_post` counter logic was
+**not** the cause (a stop-in-flight hypothesis was investigated and rejected).
+The fix writes an authoritative `final_stats.csv` from `environment.stats` on
+`test_stop` and makes the runner use it; the periodic CSV is kept as a sidecar.
+
+### Run 3 — after the fix (counters reconciled)
+
+| Metric | Value |
+| --- | ---: |
+| Target average RPS | 330.94 |
+| Actual RPS | 283.61 |
+| Achieved ratio | 0.857 |
+| Request Count (`final_stats.csv`) | 136200 |
+| Custom `total_http_requests` | 136200 |
+| MASK / DEMASK | 65899 / 65353 |
+| HTTP 2xx / 422 / 429 / other | 131252 / 4948 / 0 / 0 |
+| Functional / transport errors | 0 / 0 |
+| p50 / p95 / p99 | 14 / 210 / 230 ms |
+| CPU / RAM (load generator) | 13.7% / 78.6 MB |
+| Result | **FAIL** |
+
+Verdict: **FAIL** — `achieved ratio 0.857 < 0.900` and `p95 210ms > 200ms`. The
+counters reconcile exactly (`final_stats.csv` Request Count == custom
+`total_http_requests` == 136200; `mask+demask == http_2xx`; `failures ==
+functional+transport == 0`). The run sustained ~284 RPS average over the 480s
+profile, below the 330.94 target.
+
+**Important caveat — the server and the load generator are not yet separated.**
+With `--rps-per-user 10` the organizer shape spawns only `ceil(target/10)`
+users, so at the 1000 RPS peak it launches just **100** users (not the 200 cap),
+and the `stats_stats_history.csv` shows a peak of only ~509 RPS. The observed
+shortfall is therefore a **proven profile under-delivery**, but it does not by
+itself prove the server cannot do more: the generator was not pushing the full
+200-user / 1000 RPS target. No confirmed 1000 RPS result exists.
+
+**Generator calibration (60s `--targets 1000`, `--max-users 200`,
+`--rps-per-user 5`)** was run to see whether the generator can approach the
+target with the full 200-user cap:
+
+| Metric | Value |
+| --- | ---: |
+| Target RPS | 1000 |
+| Actual RPS | 469.25 |
+| Achieved ratio | 0.469 |
+| Request Count (`final_stats.csv`) | 27942 |
+| Custom `total_http_requests` | 27942 |
+| p50 / p95 / p99 | 420 / 480 / 500 ms |
+| HTTP 2xx / 422 / 429 | 26924 / 1018 / 0 |
+| Functional / transport errors | 0 / 0 |
+| Result | **FAIL** |
+
+The calibration run reached **469.25 RPS** at the 1000 target with the full
+200-user cap. Counters reconcile exactly (`final_stats.csv` == custom == 27942).
+This is a single data point in this environment/configuration; it does **not**
+localize the bottleneck (server vs. load generator), because server CPU was not
+sampled and the generator and server run on the same machine. No confirmed 1000
+RPS result exists. The organizer result is left as **FAIL** with the exact
+observed numbers above; the bottleneck is not localized. Artifacts are
+gitignored under `artifacts/performance/current-review/`.
+
+### Quiet-server reruns (noisy INFO/access logging removed)
+
+**Important**: the runs above (Run 1–3 and the first calibration) were executed
+while the test server ran with **INFO/access logging** that emitted ~333 MB of
+per-request log lines into the PTY on the same machine as the load generator.
+This could distort RPS/latency. The server was restarted with
+`LOG_LEVEL=WARNING` and `uvicorn --log-level warning --no-access-log`, and the
+calibration and organizer were re-run on the quiet server.
+
+**Quiet calibration (60s `--targets 1000`, `--max-users 200`,
+`--rps-per-user 5`)**:
+
+| Metric | Value |
+| --- | ---: |
+| Target RPS | 1000 |
+| Actual RPS | 538.84 |
+| Achieved ratio | 0.539 |
+| Request Count (`final_stats.csv`) | 32077 |
+| Custom `total_http_requests` | 32077 |
+| p50 / p95 / p99 | 370 / 420 / 460 ms |
+| HTTP 2xx / 422 / 429 | 30889 / 1188 / 0 |
+| Functional / transport errors | 0 / 0 |
+| Result | **FAIL** |
+
+Throughput was **469.25 → 538.84 RPS** with the logging changed. This is
+compatible with logging overhead, but the two runs are single samples and the
+variation is not excluded, so no causal share is attributed to the logging
+change. Counters reconcile exactly (`final_stats.csv` == custom == 32077).
+
+**Quiet 480s organizer (`--rps-per-user 5`, up to 200 users)**:
+
+| Metric | Value |
+| --- | ---: |
+| Target average RPS | 330.94 |
+| Actual RPS | 290.12 |
+| Achieved ratio | 0.877 |
+| Request Count (`final_stats.csv`) | 139309 |
+| Custom `total_http_requests` | 139309 |
+| MASK / DEMASK | 67244 / 66833 |
+| HTTP 2xx / 422 / 429 / other | 134077 / 5232 / 0 / 0 |
+| Functional / transport errors | 0 / 0 |
+| p50 / p95 / p99 | 12 / 380 / 410 ms |
+| CPU / RAM (load generator) | 13.9% / 80.9 MB |
+| Result | **FAIL** |
+
+Verdict: **FAIL** — `achieved ratio 0.877 < 0.900` and `p95 380ms > 200ms`.
+Counters reconcile exactly (`final_stats.csv` == custom == 139309;
+`mask+demask == http_2xx`; `failures == functional+transport == 0`). This run
+differs from Run 3 in **two** ways at once (quiet logging **and**
+`--rps-per-user 10 → 5`), so the change from ~284 → ~290 RPS average is not
+attributed to either factor alone; the conditions and numbers are reported as
+observed. The `stats_stats_history.csv` shows a **max observed `Requests/s` of
+543.8** at a max user count of 200 — an observed peak, not a sustained 1000 RPS.
+The 330.94 target is still not reached. The bottleneck (server vs. load
+generator) is **not localized**: server CPU was not sampled and both run on the
+same machine. No confirmed 1000 RPS result exists. Artifacts are gitignored
+under `artifacts/performance/current-review/`.
