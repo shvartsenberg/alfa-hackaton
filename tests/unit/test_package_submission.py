@@ -16,6 +16,13 @@ def _minimal_project(root: Path) -> None:
         "pyproject.toml": "[project]\nname='test'\nversion='0'",
         "app/main.py": "app = None",
         "configs/consumers/default.yaml": "enabled: true",
+        "Dockerfile": "FROM python:3.12",
+        "docker-compose.yml": "services: {}",
+        ".env.example": "MASKING_KEY=",
+        "tests/conftest.py": "",
+        "tests/unit/test_masking.py": "",
+        "scripts/package_submission.py": "",
+        "docs/architecture.md": "# architecture",
     }
     for relative, content in required.items():
         path = root / relative
@@ -78,9 +85,30 @@ def test_validate_zip_rejects_forbidden_entries(
             "pyproject.toml",
             "app/main.py",
             "configs/consumers/default.yaml",
+            "Dockerfile",
+            "docker-compose.yml",
+            ".env.example",
+            "tests/conftest.py",
+            "tests/unit/test_masking.py",
+            "scripts/package_submission.py",
+            "docs/architecture.md",
         ):
             archive.writestr(required, "safe")
         archive.writestr(forbidden_name, "secret")
 
     with pytest.raises(RuntimeError, match="forbidden files"):
+        validate_zip(archive_path)
+
+
+def test_validate_zip_rejects_missing_required_files(tmp_path: Path) -> None:
+    archive_path = tmp_path / "incomplete.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        # Missing Dockerfile, docker-compose.yml, .env.example, tests, scripts,
+        # docs -> must be rejected by the strengthened manifest.
+        archive.writestr("README.md", "safe")
+        archive.writestr("pyproject.toml", "safe")
+        archive.writestr("app/main.py", "safe")
+        archive.writestr("configs/consumers/default.yaml", "safe")
+
+    with pytest.raises(RuntimeError, match="required files missing"):
         validate_zip(archive_path)
