@@ -21,6 +21,7 @@ demasking:
   enabled: true
 
 context_rules:
-  - name: pin_requires_card
-    description: Mask PIN only when a BANK_CARD is present in the same context
-    enabled: false
+  - type: PIN
+    requires:
+      - BANK_CARD
+    enabled: true

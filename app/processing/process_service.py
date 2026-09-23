@@ -64,12 +64,21 @@ class ProcessService:
         if not payload or not payload_id:
             raise InvalidPayloadError("payload and payload_id are required")
 
+        key = self._state_key(policy.consumer_id, payload_id)
         with Timer() as timer:
+            # Detection + masking are expensive (possibly a slow LLM call).
+            # Compute them once, outside the store's transition lock, so
+            # concurrent requests for different payload_ids are not serialized
+            # on the callback. The timer covers them so the recorded duration
+            # reflects the real cost of the request.
+            prepared = self._prepare_mask(payload, key, policy)
             state = self._restoration_store.transition(
-                payload_id,
-                lambda current: self._transition(current, payload, payload_id, policy),
+                key,
+                lambda current: self._transition(
+                    current, payload, key, policy, prepared
+                ),
             )
-            outcome = self._outcome_from_state(state, payload, payload_id)
+            outcome = self._outcome_from_state(state, payload, key)
 
         outcome.duration_ms = timer.elapsed_ms
         self._metrics.record_request(outcome.operation.value, timer.elapsed_ms)
@@ -77,15 +86,20 @@ class ProcessService:
         self._metrics.record_payload_size(len(payload.encode("utf-8")))
         return outcome
 
+    @staticmethod
+    def _state_key(consumer_id: str, payload_id: str) -> str:
+        return f"{consumer_id}:{payload_id}"
+
     def _transition(
         self,
         current: RestorationState | None,
         payload: str,
         payload_id: str,
         policy: ConsumerPolicy,
+        prepared: RestorationState,
     ) -> RestorationState:
         if current is None:
-            return self._mask_state(payload, payload_id, policy)
+            return prepared
         if current.state == RestorationStateStatus.MASKED:
             if hash_payload(payload) == current.original_hash:
                 # Retry of the original payload -> keep the same mask.
@@ -99,7 +113,7 @@ class ProcessService:
             return current
         raise InvalidPayloadError("payload does not match stored state")
 
-    def _mask_state(
+    def _prepare_mask(
         self, payload: str, payload_id: str, policy: ConsumerPolicy
     ) -> RestorationState:
         context = DetectionContext(consumer_id=policy.consumer_id)

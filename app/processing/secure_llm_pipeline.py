@@ -33,7 +33,9 @@ class SecureLLMPipeline:
         context = DetectionContext(consumer_id=policy.consumer_id)
         detection = self._detection_engine.detect(text, context)
         entities = [e for e in detection.entities if e.type in policy.enabled_types]
-        masking = self._masking_engine.mask(text, entities, policy.masking)
+        masking = self._masking_engine.mask(
+            text, entities, policy.masking, context_rules=policy.context_rules
+        )
         llm_output = self._llm.generate(masking.masked_text)
         restored = llm_output
         for replacement, original in masking.mappings:
