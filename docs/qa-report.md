@@ -22,8 +22,8 @@ change the public `POST /process` contract.
 - **Performance**: selectable Locust scenarios (retries, shared payload_id,
   large payload) and a target-RPS runner with persistent CSV/JSON/Markdown reports.
 - **CI**: GitHub Actions workflow (ruff, mypy, pytest, submission validation).
-  `python -m benchmarks.score` is **red** on `PASSPORT_ISSUER` recall 0.0 (see
-  defect #6); CI is not claimed green. `docker compose config` uses a safe test
+  The local quality benchmark now passes after the detection changes in `main`
+  (see defect #6); remote CI is not claimed green. `docker compose config` uses a safe test
   `MASKING_KEY`; `git diff --check` compares against the merge base.
 - **Packaging**: `.gitignore` added; generated artifacts removed from git;
   `package_submission.py` now validates the ZIP, blocks `.env` files, enforces a
@@ -90,9 +90,9 @@ The exception message/traceback may contain PII.
 
 - **Fix applied**: unexpected-error handler logs only the exception type.
 
-### 6. `PASSPORT_ISSUER` has zero recall in the benchmark (detection owner)
+### 6. `PASSPORT_ISSUER` zero recall — resolved in `main`
 
-The regex `_PASSPORT_ISSUER_RE` captures at most 5 words after the marker
+Previously, `_PASSPORT_ISSUER_RE` captured at most 5 words after the marker
 (`{0,5}`), so the issuing authority name is truncated and the detected span
 does not match the expected span in `benchmarks/dataset.yaml`:
 
@@ -101,19 +101,12 @@ does not match the expected span in `benchmarks/dataset.yaml`:
 - `pos_issuer_002`: detected `ГУ МВД России` (11–24), expected
   `ГУ МВД России по Московской области` (11–46).
 
-Result: `PASSPORT_ISSUER` recall = 0.0 (0 TP, 2 FN).
-
-- **Action (QA)**: added a per-type recall gate to `benchmarks/score.py`
-  (`_MIN_RECALL_PER_TYPE = 0.1`) so the benchmark fails on zero recall of a
-  mandatory type instead of reporting a green overall F1. This is a quality
-  gate, not a detection change.
-- **Owner action required (Participant 2, detection)**: extend the issuer regex
-  to capture the full authority name (e.g. allow more words / a `по ... области`
-  tail) so the span matches the dataset. Until then the benchmark is
-  intentionally red.
-- **Coordination (Participant 1)**: the per-type recall gate
-  (`_MIN_RECALL_PER_TYPE = 0.1`) is a QA quality threshold; its value should be
-  agreed with the benchmark owner before it is treated as a hard release gate.
+Before the detection changes, `PASSPORT_ISSUER` recall was 0.0 (0 TP, 2 FN).
+The merged `main` detector and expanded dataset now yield 8 TP, 0 FN for
+this type (recall 1.0); the local quality benchmark passes with overall F1
+0.995. In the conflict resolution, the stricter `main` quality gate was kept:
+required types have a 0.5 recall floor, overall recall and F1 have 0.8 floors.
+These are local-dataset results, not a claim about hidden organizer data.
 
 ## Performance notes
 
@@ -178,9 +171,8 @@ The following were executed and passed on this machine:
 - `pytest` — **168 passed, 6 deselected** (re-verified after the latest
   changes).
 - `pytest -m concurrency` — 4 passed.
-- `python -m benchmarks.score` — **RED**: overall F1 0.833, but
-  `PASSPORT_ISSUER` recall 0.0 fails the per-type gate (see defect #6). CI is
-  therefore red on this step; it is not claimed green.
+- `python -m benchmarks.score` — OK after merging `main`: overall F1 0.995,
+  `PASSPORT_ISSUER` recall 1.0 (8/8). Remote CI is not yet verified here.
 - `python scripts/package_submission.py artifacts/pytest-qa-final/submission.zip`
   — OK (**91 files**, re-verified after the latest changes).
 - `python scripts/package_submission.py --validate artifacts/pytest-qa-final/submission.zip`

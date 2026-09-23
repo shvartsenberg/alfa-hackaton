@@ -76,9 +76,6 @@ jobs:
           python scripts/package_submission.py --smoke /tmp/submission.zip
 
       - name: Run quality benchmark
-        # NOTE: this step is expected to be RED until the detection owner fixes
-        # PASSPORT_ISSUER recall (see docs/qa-report.md defect #6). It is kept
-        # as a strict gate so the workflow as a whole stays red while the defect
-        # is open. It runs last so the other independent gates (compose,
-        # whitespace, ZIP) still produce their results even while it fails.
+        # Keep quality as a strict gate. Run it last so the independent gates
+        # (compose, whitespace, ZIP) still report their results if it fails.
         run: python -m benchmarks.score

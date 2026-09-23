@@ -29,10 +29,39 @@ from app.detection.regex.detector import RegexDetector  # noqa: E402
 
 _DATASET_PATH = Path(__file__).resolve().parent / "dataset.yaml"
 _F1_THRESHOLD = 0.7
-# Per-type recall floor. A type that appears in the dataset but is never
-# detected (recall == 0.0) must fail the benchmark even if the overall F1 is
-# green, so a mandatory PII type cannot silently regress to zero recall.
-_MIN_RECALL_PER_TYPE = 0.1
+_MIN_RECALL = 0.5
+_MIN_OVERALL_RECALL = 0.8
+_MIN_OVERALL_F1 = 0.8
+
+# Types that must have non-zero recall (a zero-recall required type is a
+# hard failure).
+_REQUIRED_TYPES = frozenset(
+    {
+        "PERSON_NAME",
+        "BIRTH_DATE",
+        "BIRTH_PLACE",
+        "PASSPORT_NUMBER",
+        "CITIZENSHIP",
+        "PASSPORT_ISSUER",
+        "PASSPORT_DIVISION_CODE",
+        "PASSPORT_ISSUE_DATE",
+        "DRIVER_LICENSE",
+        "ADDRESS",
+        "COUNTRY",
+        "POSTAL_CODE",
+        "CITY",
+        "STREET",
+        "HOUSE",
+        "APARTMENT",
+        "EMAIL",
+        "PHONE",
+        "INN",
+        "BANK_CARD",
+        "CVV",
+        "PIN",
+        "CARDHOLDER_NAME",
+    }
+)
 
 
 def _load_dataset() -> list[dict[str, object]]:
@@ -108,7 +137,6 @@ def _main() -> int:
     total_fp = sum(fp.values())
     total_fn = sum(fn.values())
 
-    violations: list[str] = []
     for pii_type in types:
         t = tp[pii_type]
         f = fp[pii_type]
@@ -120,10 +148,6 @@ def _main() -> int:
             f"{pii_type:<22}{t:>4}{f:>4}{n:>4}"
             f"{_fmt_metric(precision):>11}{_fmt_metric(recall):>9}{_fmt_metric(f1):>8}"
         )
-        if t + n > 0 and recall < _MIN_RECALL_PER_TYPE:
-            violations.append(
-                f"{pii_type} recall {recall:.3f} < {_MIN_RECALL_PER_TYPE:.1f}"
-            )
 
     precision = total_tp / (total_tp + total_fp) if total_tp + total_fp else 0.0
     recall = total_tp / (total_tp + total_fn) if total_tp + total_fn else 0.0
@@ -142,12 +166,31 @@ def _main() -> int:
         for case_id, pii_type, value in false_positives:
             print(f"  {case_id}: {pii_type} = {value}")
 
-    if violations:
-        print("\nPer-type recall violations:")
-        for violation in violations:
-            print(f"  {violation}")
+    violations: list[str] = []
+    for pii_type in sorted(_REQUIRED_TYPES):
+        t = tp.get(pii_type, 0)
+        n = fn.get(pii_type, 0)
+        type_recall = t / (t + n) if t + n else 0.0
+        if t + n == 0:
+            continue  # no examples in the dataset for this type
+        if type_recall == 0.0:
+            violations.append(f"{pii_type}: recall is zero")
+        elif type_recall < _MIN_RECALL:
+            violations.append(
+                f"{pii_type}: recall {type_recall:.3f} < {_MIN_RECALL:.3f}"
+            )
+    if recall < _MIN_OVERALL_RECALL:
+        violations.append(f"overall recall {recall:.3f} < {_MIN_OVERALL_RECALL:.3f}")
+    if f1 < _MIN_OVERALL_F1:
+        violations.append(f"overall F1 {f1:.3f} < {_MIN_OVERALL_F1:.3f}")
 
-    return 1 if (f1 < _F1_THRESHOLD or violations) else 0
+    if violations:
+        print("\nQuality gate FAILED:")
+        for violation in violations:
+            print(f"  - {violation}")
+        return 1
+    print("\nQuality gate passed.")
+    return 0
 
 
 if __name__ == "__main__":

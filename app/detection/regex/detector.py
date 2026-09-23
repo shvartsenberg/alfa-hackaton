@@ -50,31 +50,38 @@ _PERSON_NAME_RE = re.compile(
     r"([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2})"
 )
 _BIRTH_PLACE_RE = re.compile(
-    r"(?i:место рождения|родился в|родилась в|уроженец|уроженка|родом из)\s*:?\s*"
-    r"((?:[а-яё]+\s+)?[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2})"
+    r"(?i:место рождения|родился в|родилась в|уроженец|уроженка|родом из)\s*:?\s*[—–-]?\s*"
+    r"(?:г\.\s*|городе\s+|города\s+|город\s+|село\s+|села\s+|с\.\s*|"
+    r"деревня\s+|деревни\s+|д\.\s*)?"
+    r"([А-ЯЁ][а-яё]+(?:-[а-яё]+-[А-ЯЁ][а-яё]+|-[А-ЯЁ][а-яё]+)*"
+    r"(?:\s+[А-ЯЁ][а-яё]+(?:-[а-яё]+-[А-ЯЁ][а-яё]+|-[А-ЯЁ][а-яё]+)*){0,1}"
+    r"(?:\s+[А-ЯЁ][а-яё]+(?:ской|ского|ский|ого|ая|ое)\s+(?:области|область|обл\.|района|район|края|край))?)"
 )
 _CITIZENSHIP_RE = re.compile(
-    r"(?i:гражданство|гражданин|гражданка)\s*:?\s*([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)"
+    r"(?i:гражданство|гражданин|гражданка)\s*:?\s*"
+    r"([А-ЯЁ][А-ЯЁа-яё]*(?:\s+[А-ЯЁ][А-ЯЁа-яё]*){0,2})"
 )
 _PASSPORT_ISSUER_RE = re.compile(
-    r"(?i:кем выдан|выдан|выдано|орган, выдавший)\s*:?\s*"
-    r"([А-ЯЁ][А-ЯЁа-яё]*(?:\s+[А-ЯЁ][А-ЯЁа-яё]*){0,5}(?:\s+г\.\s*[А-ЯЁ][а-яё]+)?)"
+    r"(?i:кем выдан|выдан\b|выдано\b|орган, выдавший)\s*:?\s*"
+    r"([А-ЯЁа-яё0-9№-]+\.?(?:\s+[А-ЯЁа-яё0-9№-]+\.?)*)"
 )
 _PASSPORT_ISSUE_DATE_RE = re.compile(
-    r"(?i:дата выдачи|выдан|выдано)\s+"
+    r"(?i:дата выдачи|выдан|выдано)(?:[^0-9]{0,80}?)"
     r"(\d{2}[./]\d{2}[./]\d{4}|\d{4}-\d{2}-\d{2})"
 )
 _DRIVER_LICENSE_RE = re.compile(
-    r"(?i:водительское удостоверение|водительские права|права|в\.у\.|ву)\s+"
-    r"(\d{2}\s?\d{2}\s?\d{6}|\d{10})"
+    r"(?i:водительское удостоверение|водительские права|права|в\.у\.|ву)\s*:?\s*"
+    r"(\d{2}\s?[А-ЯЁ]{2}\s?\d{6}|\d{2}\s?\d{2}\s?\d{6}|\d{10})"
 )
 _ADDRESS_RE = re.compile(
-    r"(?i:адрес|место жительства|место регистрации|проживает|прожива|"
-    r"зарегистрирован|зарегистрирована|прописан|прописана)\s*:?\s*"
-    r"((?:[А-ЯЁа-яё0-9]+\.?\s*[,.]?\s*){2,10})"
+    r"(?i:адрес регистрации|адрес проживания|адрес|место жительства|"
+    r"место регистрации|проживает|живет|живёт|"
+    r"зарегистрирован|зарегистрирована|прописан|прописана)"
+    r"(?:\s+по\s+адресу)?\s*:?\s*"
+    r"((?:[А-ЯЁа-яё0-9-]+\.?\s*[,.]?\s*){2,10})"
 )
 _COUNTRY_RE = re.compile(
-    r"(?i:страна|гражданство)\s*:?\s*([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)"
+    r"(?i:страна)\s*:?\s*([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?)"
 )
 _POSTAL_CODE_RE = re.compile(
     r"(?i:индекс|почтовый индекс)\s*:?\s*(\d{6})"
@@ -166,6 +173,62 @@ _MARKER_TYPES: dict[PIIType, tuple[str, ...]] = {
     PIIType.PASSPORT_NUMBER: ("паспорт", "серия", "выдан"),
 }
 
+# Country/citizenship names that must not be treated as PERSON_NAME.
+_COUNTRY_NAMES = frozenset(
+    {
+        "российская федерация",
+        "российской федерации",
+        "рф",
+        "россия",
+        "россии",
+        "республика беларусь",
+        "республики беларусь",
+        "беларусь",
+        "беларуси",
+        "казахстан",
+        "казахстана",
+        "республика казахстан",
+        "республики казахстан",
+        "украина",
+        "украины",
+        "узбекистан",
+        "узбекистана",
+        "армения",
+        "армении",
+        "грузия",
+        "грузии",
+        "таджикистан",
+        "таджикистана",
+        "киргизия",
+        "киргизии",
+        "молдова",
+        "молдовы",
+        "туркменистан",
+        "туркменистана",
+        "азербайджан",
+        "азербайджана",
+        "литва",
+        "литвы",
+        "латвия",
+        "латвии",
+        "эстония",
+        "эстонии",
+    }
+)
+
+# Address component types that should be suppressed in a bank-branch context.
+_ADDRESS_COMPONENT_TYPES = frozenset(
+    {
+        PIIType.ADDRESS,
+        PIIType.CITY,
+        PIIType.STREET,
+        PIIType.HOUSE,
+        PIIType.APARTMENT,
+        PIIType.POSTAL_CODE,
+        PIIType.PHONE,
+    }
+)
+
 
 class RegexDetector(PIIDetector):
     """Detects PII candidates using compiled regular expressions."""
@@ -184,12 +247,28 @@ class RegexDetector(PIIDetector):
                     while end > start and value[-1] in ".,;!? ":
                         end -= 1
                         value = value[:-1]
+                    if pii_type == PIIType.PASSPORT_ISSUER:
+                        value, start, end = self._clean_issuer(
+                            text, value, start, end
+                        )
+                        if not value:
+                            continue
                 else:
                     value = match.group(0)
                     start = match.start()
                     end = match.end()
                 validator = _VALIDATORS.get(pii_type)
                 if validator is not None and not validator(value):
+                    continue
+                if pii_type == PIIType.PERSON_NAME and value.lower() in _COUNTRY_NAMES:
+                    continue
+                if pii_type == PIIType.CITIZENSHIP and value.lower() not in _COUNTRY_NAMES:
+                    continue
+                if pii_type == PIIType.ADDRESS and not self._is_full_address(value):
+                    continue
+                if pii_type in _ADDRESS_COMPONENT_TYPES and self._is_bank_context(
+                    text, start
+                ):
                     continue
                 markers = _MARKER_TYPES.get(pii_type)
                 if markers is not None and not self._has_marker(
@@ -214,3 +293,64 @@ class RegexDetector(PIIDetector):
     ) -> bool:
         window = text[max(0, start - _MARKER_WINDOW) : end + _MARKER_WINDOW].lower()
         return any(marker in window for marker in markers)
+
+    @staticmethod
+    def _is_bank_context(text: str, start: int) -> bool:
+        """Return True if the text near ``start`` mentions a bank branch.
+
+        A public bank-branch phone/address is not personal data, so it is
+        suppressed. But a clearly personal phone (e.g. "его личный телефон")
+        must not be suppressed even if a bank is mentioned nearby.
+        """
+        window = text[max(0, start - 80) : start + 20].lower()
+        if "банк" not in window and "отделение" not in window:
+            return False
+        # Personal indicators mean the value belongs to the client, not the bank.
+        personal = ("личный", "личного", "личному", "мой", "моя", "моего",
+                    "его", "её", "ее", "клиента", "клиент", "заявителя",
+                    "пациента", "сотрудника")
+        return not any(indicator in window for indicator in personal)
+
+    @staticmethod
+    def _is_full_address(value: str) -> bool:
+        """Return True if ``value`` looks like a full address, not a fragment.
+
+        A full address contains at least one address component (postal code,
+        street, house, apartment) or is at least three tokens long.
+        """
+        import re as _re
+
+        if _re.search(r"\d{6}|ул\.|улица|д\.|дом|кв\.|квартира|г\.|город", value):
+            return True
+        return len(value.split()) >= 3
+
+    @staticmethod
+    def _clean_issuer(
+        text: str, value: str, start: int, end: int
+    ) -> tuple[str, int, int]:
+        """Trim a PASSPORT_ISSUER value to the issuing authority.
+
+        The greedy pattern may capture a trailing date or a pure date
+        fragment; truncate at a date and drop purely numeric values.
+        """
+        import re as _re
+
+        # Look for a date in the original text right after the captured span.
+        tail = text[end : end + 12]
+        date_match = _re.match(r"\s*\d{2}[./]\d{2}[./]\d{4}|\s*\d{4}-\d{2}-\d{2}", tail)
+        if date_match:
+            value = value.rstrip()
+            end = start + len(value)
+        # Also truncate at a date fragment inside the value (e.g. "12" in
+        # "ОВД района Арбат 12").
+        frag = _re.search(r"\s+\d{1,2}$", value)
+        if frag:
+            value = value[: frag.start()].rstrip()
+            end = start + len(value)
+        if not value or value.isdigit():
+            return "", start, start
+        # Drop values that are just a year phrase (e.g. "в 2015 году"), which
+        # are not an issuing authority.
+        if _re.fullmatch(r"в\s+\d{4}\s+году", value):
+            return "", start, start
+        return value, start, end

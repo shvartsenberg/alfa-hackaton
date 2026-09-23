@@ -96,9 +96,9 @@ python -m benchmarks.score
 ```
 
 Reports span-level precision/recall/F1 per type and overall. The benchmark
-fails if overall F1 is below threshold **or** if any type with expected cases
-has recall below `_MIN_RECALL_PER_TYPE` (0.1), so a green overall result cannot
-mask zero recall of a mandatory type.
+fails if a required type represented in the dataset has recall below 0.5,
+overall recall below 0.8, or overall F1 below 0.8. A zero-recall required
+type therefore cannot be hidden by the overall result.
 
 ## Load test
 
@@ -169,10 +169,9 @@ runs MASK/DEMASK, checks exact restore, and runs a quick pytest subset.
 
 ## Honest limitations
 
-- `PASSPORT_ISSUER` currently has recall 0.0 in the local benchmark (the regex
-  truncates the issuing authority name); the benchmark fails on this until the
-  detection owner fixes the rule. **CI is therefore red** on
-  `python -m benchmarks.score`; it is not claimed green.
+- The earlier zero-recall `PASSPORT_ISSUER` defect was fixed in `main`. The
+  local benchmark now passes (8/8 issuer spans; overall F1 0.995). Remote CI
+  and hidden organizer data are not covered by this local result.
 - In-memory restoration store is single-process; use Redis for multiple workers.
 - No real NER, no external LLM in the hot path (LLM detector is optional and
   off by default).
